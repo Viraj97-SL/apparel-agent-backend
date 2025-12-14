@@ -2,7 +2,6 @@
 FROM python:3.11-slim
 
 # 2. Set the "Working Directory" inside the container
-# This is like doing 'cd /app' inside the box.
 WORKDIR /app
 
 # 3. Install System Dependencies
@@ -12,32 +11,23 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # 4. Copy Requirements FIRST (Caching Strategy)
-# Docker caches steps. If you change code but not requirements,
-# it skips installing pip packages again. Speed boost!
 COPY requirements.txt .
 
-# 5. Install Python Dependencies
+# --- SPEED BOOST: Install CPU-only PyTorch FIRST ---
+# This prevents downloading the huge GPU version, saving time and space.
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# 5. Install the rest of the Python Dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 6. Copy the rest of your code
 COPY . .
 
-# 7. Define Environment Variables
-# This ensures Python prints logs immediately to the console.
-ENV PYTHONUNBUFFERED=1
-
-# ... (previous lines)
-
-COPY . .
-
-# [NEW LINE] Create the directory for VTO uploads so the code doesn't crash
+# 7. Create the directory for VTO uploads so the code doesn't crash
 RUN mkdir -p uploaded_images
 
+# 8. Define Environment Variables
 ENV PYTHONUNBUFFERED=1
 
-CMD uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}
-
-# 8. Run the Application
-# We use shell format to allow the $PORT variable (injected by Cloud Providers)
-# Host 0.0.0.0 allows external access (required for containers).
+# 9. Run the Application
 CMD uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}
