@@ -1,62 +1,65 @@
 import os
+import sqlite3
 import json
 import uuid
 import datetime
-import sqlite3
-from dotenv import load_dotenv
 from typing import List, Optional
-from langchain_google_genai import ChatGoogleGenerativeAI
+
+# Third-party imports
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
 from langchain_community.utilities import SQLDatabase
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
-from sqlalchemy import create_engine, text
-from mcp.server.fastmcp import FastMCP
 from langchain_groq import ChatGroq
+from mcp.server.fastmcp import FastMCP
 
-# Load environment variables
-import os
-from dotenv import load_dotenv
-
-# Try to load .env (It's okay if it fails on Railway)
+# --- 1. Cloud-Aware Environment Setup ---
+# Try to load .env (It is okay if this fails on Railway)
 load_dotenv()
 
-# Get the key from the System Environment (Railway Variables)
+# Get the key from the System (Railway Variables)
 google_api_key = os.getenv("GOOGLE_API_KEY")
 
-# Only crash if the key is missing from EVERYWHERE
+# Only crash if the key is missing from BOTH places
 if not google_api_key:
-    raise ValueError("GOOGLE_API_KEY is missing from environment variables.")
+    # Print a warning but try to continue or show helpful log
+    print("CRITICAL: GOOGLE_API_KEY not found in env.")
 
-# --- Database Setup ---
+# --- 2. Database Setup ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 DB_PATH = os.path.join(project_root, "apparel.db")
 DB_URI = f"sqlite:///{DB_PATH}"
 
 if not os.path.exists(DB_PATH):
-    raise FileNotFoundError(f"Database file not found at {DB_PATH}.")
+    # On Railway, the DB might be created at runtime, so we just warn instead of crash
+    print(f"WARNING: Database file not found at {DB_PATH}. Ensure it is created.")
 
-# READ-ONLY toolkit
+# READ-ONLY toolkit (LangChain)
 db = SQLDatabase.from_uri(DB_URI, include_tables=['orders', 'customers', 'returns'])
 
-# WRITE engine
+# WRITE engine (SQLAlchemy)
 write_engine = create_engine(DB_URI)
 
-# Initialize LLM
-#llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GOOGLE_API_KEY)
+# --- 3. Initialize LLM ---
+# We use Groq for speed, but you can swap this if needed
 llm = ChatGroq(
     model="llama-3.1-8b-instant",
     api_key=os.getenv("GROQ_API_KEY")
 )
 
-# MCP Server
+# --- 4. Initialize MCP Server ---
 mcp = FastMCP("data_query")
 
+
+# --- 5. Tools ---
 
 # Tool 1: SQL db query
 @mcp.tool()
 def sql_db_query(query: str) -> str:
     """Execute a SQL query on 'orders', 'customers', or 'returns'. Do NOT use for products."""
     sql_toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+    # Find the specific tool in the toolkit
     query_tool = [t for t in sql_toolkit.get_tools() if t.name == 'sql_db_query'][0]
     return query_tool.invoke({"query": query})
 
@@ -66,6 +69,7 @@ def sql_db_query(query: str) -> str:
 def sql_db_schema(table_names: Optional[str] = None) -> str:
     """Get schema of 'orders', 'customers', or 'returns'."""
     sql_toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+    # Find the specific tool in the toolkit
     schema_tool = [t for t in sql_toolkit.get_tools() if t.name == 'sql_db_schema'][0]
     return schema_tool.invoke({"table_names": table_names or ""})
 
@@ -78,6 +82,7 @@ async def initiate_return(order_id: str, product_ids: List[str]) -> str:
         return_id = f"RET-{uuid.uuid4().hex[:6].upper()}"
         return_date = datetime.date.today().isoformat()
         products_json = json.dumps(product_ids)
+
         with write_engine.connect() as conn:
             conn.execute(
                 text(
@@ -90,9 +95,7 @@ async def initiate_return(order_id: str, product_ids: List[str]) -> str:
         return f"Error: {e}"
 
 
-# Tool 4: Product Database Query (COMPLETELY FIXED SCHEMA)
-# In app/data_query_server.py
-
+# Tool 4: Product Database Query
 @mcp.tool()
 async def query_product_database(
         product_name: Optional[str] = None,
@@ -103,14 +106,13 @@ async def query_product_database(
     """
     Search the 'products' table. Returns price, stock, and details.
     """
-    # --- FIX: SANITIZE INPUTS ---
+    # --- SANITIZE INPUTS ---
     # The LLM sometimes sends the string "None" instead of actual Python None.
-    # We must convert these to real None so the SQL query ignores them.
     if product_name == "None": product_name = None
     if category == "None": category = None
     if colour == "None": colour = None
     if size == "None": size = None
-    # ----------------------------
+    # -----------------------
 
     query = """
             SELECT p.product_name, \
