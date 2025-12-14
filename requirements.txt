@@ -34,3 +34,4 @@ sentence-transformers
 requests
 gradio_client
 cloudinary
+slowapi
