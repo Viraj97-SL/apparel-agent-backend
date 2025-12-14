@@ -23,6 +23,8 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 import nest_asyncio
+
+# Apply the patch for nested event loops (Fixes RuntimeError on deployment)
 nest_asyncio.apply()
 
 # Load environment variables
@@ -31,12 +33,13 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
+# On Railway, these raise errors only if the Variable is missing from the Dashboard
 if not GOOGLE_API_KEY:
-    raise ValueError("GOOGLE_API_KEY not found in .env file.")
+    print("WARNING: GOOGLE_API_KEY not found. RAG tools may fail.")
 if not TAVILY_API_KEY:
-    raise ValueError("TAVILY_API_KEY not found in .env file.")
+    print("WARNING: TAVILY_API_KEY not found. Web search will fail.")
 if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY not found in .env file.")
+    raise ValueError("GROQ_API_KEY not found. Cannot initialize LLMs.")
 
 # --- 1. Define Agent State ---
 class AgentState(TypedDict):
@@ -48,16 +51,12 @@ class AgentState(TypedDict):
 # --- HYBRID BRAIN SETUP ---
 
 # 1. The "Big Brain" (For the Supervisor)
-# High Intelligence, Lower Rate Limit (100k tokens/day)
-# Perfect for decision making and routing.
 llm_supervisor = ChatGroq(
     model="llama-3.3-70b-versatile",
     api_key=GROQ_API_KEY
 )
 
 # 2. The "Fast Worker" (For Data & Web Agents)
-# Lower Intelligence, Massive Rate Limit (500k tokens/day)
-# Perfect for tool calling and simple answers.
 llm_worker = ChatGroq(
     model="llama-3.1-8b-instant",
     api_key=GROQ_API_KEY
@@ -81,7 +80,9 @@ async def initialize_data_tools():
             "data_query": {
                 "transport": "stdio",
                 "command": python_path,
-                "args": [os.path.join(os.path.dirname(__file__), "data_query_server.py")],  # The script as an argument
+                "args": [os.path.join(os.path.dirname(__file__), "data_query_server.py")],
+                # CRITICAL FIX: Pass environment variables (API Keys) to the subprocess
+                "env": dict(os.environ)
             }
         }
     )
