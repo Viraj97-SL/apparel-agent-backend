@@ -13,10 +13,18 @@ from mcp.server.fastmcp import FastMCP
 from langchain_groq import ChatGroq
 
 # Load environment variables
+import os
+from dotenv import load_dotenv
+
+# Try to load .env (It's okay if it fails on Railway)
 load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-if not GOOGLE_API_KEY:
-    raise ValueError("GOOGLE_API_KEY not found in .env file.")
+
+# Get the key from the System Environment (Railway Variables)
+google_api_key = os.getenv("GOOGLE_API_KEY")
+
+# Only crash if the key is missing from EVERYWHERE
+if not google_api_key:
+    raise ValueError("GOOGLE_API_KEY is missing from environment variables.")
 
 # --- Database Setup ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
