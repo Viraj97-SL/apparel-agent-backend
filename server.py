@@ -14,6 +14,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 # Import your agents
+# Ensure these files exist and have no errors!
 from app.agent import app as rag_agent_app
 from app.vto_agent import handle_vto_message
 
@@ -26,38 +27,46 @@ ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "avif"}
 MAX_FILE_SIZE = 5 * 1024 * 1024
 
 # --- INITIALIZE APP ---
-# 1. Setup the Rate Limiter (The Bouncer)
+# 1. Setup the Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
 
-api = FastAPI(
+# 2. Initialize FastAPI (Renamed to 'app' to fix Docker crash)
+app = FastAPI(
     title="Apparel Chatbot API",
-    description="Secure API for the multi-agent apparel customer service chatbot."
+    description="Secure API for the multi-agent apparel customer service chatbot.",
+    version="1.0",
+    servers=[
+        # YOUR RAILWAY URL (Production)
+        {"url": "https://apparel-agent-backend-production.up.railway.app", "description": "Production Server"},
+        # Localhost (Development)
+        {"url": "http://localhost:8000", "description": "Local Development"}
+    ]
 )
 
-# 2. Connect Limiter to API
-api.state.limiter = limiter
-api.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# 3. Connect Limiter to API
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# 3. Mount Static Files (So we can see VTO results)
-api.mount("/uploaded_images", StaticFiles(directory=UPLOAD_DIR), name="images")
+# 4. Mount Static Files
+app.mount("/uploaded_images", StaticFiles(directory=UPLOAD_DIR), name="images")
 
 # Mount the product images folder
-os.makedirs("product_images", exist_ok=True) # Create if missing
-api.mount("/product_images", StaticFiles(directory="product_images"), name="products")
+os.makedirs("product_images", exist_ok=True)
+app.mount("/product_images", StaticFiles(directory="product_images"), name="products")
 
-# --- SECURITY: CORS (The Perimeter Fence) ---
-# Only allow these specific websites to talk to your server
+# --- SECURITY: CORS ---
 origins = [
-    "http://localhost:3000",  # Your local React Frontend
-    "http://127.0.0.1:3000",  # Alternative local address
-    # "https://xxxx-xxxx.ngrok-free.app" # <--- UNCOMMENT THIS when you run ngrok
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://apparel-agent-backend-production.up.railway.app",
+    "*"  # Allow ALL origins (Fixes Vercel connection issues)
 ]
 
-api.add_middleware(
+app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],  # Only allow reading/writing, no deleting
+    allow_methods=["*"],  # Allow all methods (GET, POST, OPTIONS)
     allow_headers=["*"],
 )
 
@@ -68,10 +77,10 @@ class OutputChat(BaseModel):
 
 
 # --- THE CHAT ENDPOINT ---
-@api.post("/chat", response_model=OutputChat)
-@limiter.limit("50/minute")  # SECURITY: Allow max 5 messages per minute per user
+@app.post("/chat", response_model=OutputChat)
+@limiter.limit("50/minute")
 async def chat(
-        request: Request,  # Required for Rate Limiting
+        request: Request,
         query: str = Form(...),
         thread_id: str = Form(None),
         mode: str = Form("standard"),
@@ -83,57 +92,55 @@ async def chat(
 
     image_path = None
 
-    # --- SECURITY: File Validation (The ID Check) ---
+    # --- SECURITY: File Validation ---
     if file:
-        # A. Check File Size (Prevent crash via massive files)
-        file.file.seek(0, 2)  # Move to end of file
-        size = file.file.tell()  # Get size
-        file.file.seek(0)  # Reset to start
+        file.file.seek(0, 2)
+        size = file.file.tell()
+        file.file.seek(0)
 
         if size > MAX_FILE_SIZE:
             return OutputChat(response="Error: Image is too large. Max size is 5MB.", thread_id=thread_id)
 
-        # B. Check Extension (Prevent scripts)
         filename = file.filename.lower()
         ext = filename.split(".")[-1] if "." in filename else ""
         if ext not in ALLOWED_EXTENSIONS:
-            return OutputChat(response="Error: Invalid file type. Only JPG, PNG, WEBP allowed.", thread_id=thread_id)
+            return OutputChat(response="Error: Invalid file type.", thread_id=thread_id)
 
-        # C. Sanitize Filename (Prevent overwriting/hacking)
-        # We IGNORE the user's filename (e.g., 'hack.exe'). We give it a random ID.
         safe_filename = f"{uuid.uuid4()}.{ext}"
         file_location = os.path.join(UPLOAD_DIR, safe_filename)
 
-        # Save securely
         with open(file_location, "wb+") as file_object:
             shutil.copyfileobj(file.file, file_object)
 
         image_path = file_location
-        print(f"Securely saved file to: {image_path}")
 
-    # --- AGENT LOGIC (Unchanged) ---
+    # --- AGENT LOGIC ---
     final_response = "Error processing request."
 
-    if mode == "vto":
-        print(f"--- VTO MODE [Thread: {thread_id}] ---")
-        final_response = handle_vto_message(thread_id, query, image_path)
-    else:
-        print(f"--- STANDARD MODE [Thread: {thread_id}] ---")
-        config = {"configurable": {"thread_id": thread_id}}
-        input_message = [HumanMessage(content=query)]
+    try:
+        if mode == "vto":
+            print(f"--- VTO MODE [Thread: {thread_id}] ---")
+            final_response = handle_vto_message(thread_id, query, image_path)
+        else:
+            print(f"--- STANDARD MODE [Thread: {thread_id}] ---")
+            config = {"configurable": {"thread_id": thread_id}}
+            input_message = [HumanMessage(content=query)]
 
-        async for event in rag_agent_app.astream({"messages": input_message}, config=config, stream_mode="values"):
-            new_messages = event.get("messages", [])
-            if new_messages:
-                last_message = new_messages[-1]
-                if isinstance(last_message, AIMessage) and not last_message.tool_calls:
-                    raw_content = last_message.content
-                    if isinstance(raw_content, list) and raw_content:
-                        first_part = raw_content[0]
-                        if "text" in first_part:
-                            final_response = first_part["text"]
-                    elif isinstance(raw_content, str):
-                        final_response = raw_content
+            async for event in rag_agent_app.astream({"messages": input_message}, config=config, stream_mode="values"):
+                new_messages = event.get("messages", [])
+                if new_messages:
+                    last_message = new_messages[-1]
+                    if isinstance(last_message, AIMessage) and not last_message.tool_calls:
+                        raw_content = last_message.content
+                        if isinstance(raw_content, list) and raw_content:
+                            first_part = raw_content[0]
+                            if "text" in first_part:
+                                final_response = first_part["text"]
+                        elif isinstance(raw_content, str):
+                            final_response = raw_content
+    except Exception as e:
+        print(f"ERROR in Chat Endpoint: {e}")
+        final_response = "I encountered an internal error. Please try again."
 
     if final_response is None:
         final_response = "Sorry, I couldn't find an answer to that."
@@ -142,5 +149,6 @@ async def chat(
 
 
 if __name__ == "__main__":
-    print("Starting SECURE API server...")
-    uvicorn.run("server:api", host="127.0.0.1", port=8000, reload=True)
+    # IMPORTANT: The Dockerfile runs 'uvicorn server:app', so this block is for local testing only.
+    # We use port 8000.
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
