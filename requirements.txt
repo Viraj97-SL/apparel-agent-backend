@@ -36,3 +36,5 @@ gradio_client
 cloudinary
 slowapi
 langgraph-checkpoint-sqlite
+
+nest_asyncio

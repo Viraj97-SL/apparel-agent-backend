@@ -22,6 +22,8 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 # For supervisor tool-calling
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+import nest_asyncio
+nest_asyncio.apply()
 
 # Load environment variables
 load_dotenv()
