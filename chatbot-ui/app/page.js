@@ -53,7 +53,7 @@ export default function Chat() {
       // ---------------------------------------------------------
       // 👇 THE FIX IS HERE: Use the Environment Variable
       // ---------------------------------------------------------
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
       
       const response = await fetch(`${API_URL}/chat`, {
         method: 'POST',
