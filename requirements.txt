@@ -35,3 +35,4 @@ requests
 gradio_client
 cloudinary
 slowapi
+langgraph-checkpoint-sqlite
