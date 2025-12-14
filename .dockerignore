@@ -1,0 +1,23 @@
+# Ignore Git history
+.git
+
+# Ignore local virtual environments (Conda/Venv)
+venv/
+env/
+.venv/
+miniconda3/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# SECURITY: Never copy secrets into the image
+.env
+.env.local
+
+# Ignore huge files or temp files
+*.db-journal
+test_*.py
+
+product_images/
+uploaded_images/
