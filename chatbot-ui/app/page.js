@@ -50,7 +50,12 @@ export default function Chat() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/chat', {
+      // ---------------------------------------------------------
+      // 👇 THE FIX IS HERE: Use the Environment Variable
+      // ---------------------------------------------------------
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
+      
+      const response = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         // Note: Do NOT set Content-Type header when using FormData;
         // the browser sets it automatically with the boundary.
