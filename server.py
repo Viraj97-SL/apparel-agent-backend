@@ -62,13 +62,16 @@ origins = [
     "*"  # Allow ALL origins (Fixes Vercel connection issues)
 ]
 
+# server.py
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # <--- MUST BE ["*"]
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods (GET, POST, OPTIONS)
+    allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 class OutputChat(BaseModel):
