@@ -36,5 +36,6 @@ gradio_client
 cloudinary
 slowapi
 langgraph-checkpoint-sqlite
-
+pandas
+openpyxl
 nest_asyncio

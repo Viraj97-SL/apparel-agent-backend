@@ -2,18 +2,24 @@ import uvicorn
 import uuid
 import shutil
 import os
+import sqlite3
+from contextlib import asynccontextmanager  # <--- NEW: Modern Startup Handler
+
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage, AIMessage
 
+# --- DB IMPORTS ---
+from app.db_builder import init_db, populate_initial_data
+
 # --- SECURITY: Rate Limiting Imports ---
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-# Import your agents
+# --- AGENT IMPORTS ---
 # Ensure these files exist and have no errors!
 from app.agent import app as rag_agent_app
 from app.vto_agent import handle_vto_message
@@ -21,24 +27,55 @@ from app.vto_agent import handle_vto_message
 # --- CONFIGURATION ---
 UPLOAD_DIR = "uploaded_images"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+DB_PATH = "apparel.db"  # Path for the startup check
 
 # SECURITY: Allowed file types and Max Size (5MB)
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "avif"}
 MAX_FILE_SIZE = 5 * 1024 * 1024
 
+
+# --- LIFESPAN MANAGER (The Modern Startup Way) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🔄 Lifespan: Checking database status...")
+    try:
+        # 1. Ensure Tables Exist
+        init_db()
+
+        # 2. Check for Data (Using direct SQLite connection for safety)
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM products")
+        count = cursor.fetchone()[0]
+        conn.close()
+
+        if count == 0:
+            print("⚠️ Database is empty. Seeding from Excel...")
+            populate_initial_data()
+            print("✅ Database populated successfully!")
+        else:
+            print(f"✅ Database has data ({count} products). No action needed.")
+
+    except Exception as e:
+        print(f"❌ Startup Error: {e}")
+
+    yield  # <--- APP RUNS HERE
+
+    print("🛑 Shutdown: Server closing...")
+
+
 # --- INITIALIZE APP ---
 # 1. Setup the Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
 
-# 2. Initialize FastAPI (Renamed to 'app' to fix Docker crash)
+# 2. Initialize FastAPI with Lifespan
 app = FastAPI(
     title="Apparel Chatbot API",
     description="Secure API for the multi-agent apparel customer service chatbot.",
     version="1.0",
+    lifespan=lifespan,  # <--- CONNECT LIFESPAN HERE
     servers=[
-        # YOUR RAILWAY URL (Production)
         {"url": "https://apparel-agent-backend-production.up.railway.app", "description": "Production Server"},
-        # Localhost (Development)
         {"url": "http://localhost:8000", "description": "Local Development"}
     ]
 )
@@ -49,29 +86,18 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # 4. Mount Static Files
 app.mount("/uploaded_images", StaticFiles(directory=UPLOAD_DIR), name="images")
-
-# Mount the product images folder
+# Mount the product images folder (if you use local images)
 os.makedirs("product_images", exist_ok=True)
 app.mount("/product_images", StaticFiles(directory="product_images"), name="products")
 
 # --- SECURITY: CORS ---
-origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://apparel-agent-backend-production.up.railway.app",
-    "*"  # Allow ALL origins (Fixes Vercel connection issues)
-]
-
-# server.py
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # <--- MUST BE ["*"]
+    allow_origins=["*"],  # <--- Allow ALL for testing (Change to specific domains in prod if needed)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 
 class OutputChat(BaseModel):
@@ -153,5 +179,4 @@ async def chat(
 
 if __name__ == "__main__":
     # IMPORTANT: The Dockerfile runs 'uvicorn server:app', so this block is for local testing only.
-    # We use port 8000.
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
