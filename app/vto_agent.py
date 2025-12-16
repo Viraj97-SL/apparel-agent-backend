@@ -11,10 +11,22 @@ from dotenv import load_dotenv
 # Ensure env vars are loaded
 load_dotenv()
 
-# Import your database path
+# Import your database path (Local)
+#project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#DB_PATH = os.path.join(project_root, "apparel.db")
+#PRODUCT_IMAGES_DIR = os.path.join(project_root, "product_images")  # Path to your real images
+
+#cloud
+# Setup Paths
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(project_root, "apparel.db")
-PRODUCT_IMAGES_DIR = os.path.join(project_root, "product_images")  # Path to your real images
+
+
+# --- 🚨 CONFIGURATION: ENTER YOUR CLOUDINARY BASE URL HERE 🚨 ---
+# It usually looks like: https://res.cloudinary.com/<cloud_name>/image/upload/
+# Make sure it ends with a slash '/'
+CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/"
+#https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694935/apparel_bot_products/PRB022.jpg
 
 # In-memory storage
 vto_sessions: Dict[str, dict] = {}

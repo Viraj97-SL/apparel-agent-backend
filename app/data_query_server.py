@@ -25,15 +25,13 @@ def log_warning(msg: str):
 # --- 1. Cloud-Aware Environment Setup ---
 load_dotenv()
 
-# Get keys
 google_api_key = os.getenv("GOOGLE_API_KEY")
 groq_api_key = os.getenv("GROQ_API_KEY")
 
 if not google_api_key:
     log_warning("GOOGLE_API_KEY not found in env.")
-
 if not groq_api_key:
-    log_warning("GROQ_API_KEY not found in env. The server might crash when initializing LLM.")
+    log_warning("GROQ_API_KEY not found in env.")
 
 # --- 2. Database Setup ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -46,15 +44,11 @@ if not os.path.exists(DB_PATH):
 
 # READ-ONLY toolkit
 db = SQLDatabase.from_uri(DB_URI, include_tables=['orders', 'customers', 'returns'])
-
 # WRITE engine
 write_engine = create_engine(DB_URI)
 
 # --- 3. Initialize LLM ---
-llm = ChatGroq(
-    model="llama-3.1-8b-instant",
-    api_key=groq_api_key
-)
+llm = ChatGroq(model="llama-3.1-8b-instant", api_key=groq_api_key)
 
 # --- 4. Initialize MCP Server ---
 mcp = FastMCP("data_query")
@@ -62,16 +56,14 @@ mcp = FastMCP("data_query")
 
 # --- 5. Tools ---
 
-# Tool 1: SQL db query
 @mcp.tool()
 def sql_db_query(query: str) -> str:
-    """Execute a SQL query on 'orders', 'customers', or 'returns'. Do NOT use for products."""
+    """Execute a SQL query on 'orders', 'customers', or 'returns'."""
     sql_toolkit = SQLDatabaseToolkit(db=db, llm=llm)
     query_tool = [t for t in sql_toolkit.get_tools() if t.name == 'sql_db_query'][0]
     return query_tool.invoke({"query": query})
 
 
-# Tool 2: SQL db schema
 @mcp.tool()
 def sql_db_schema(table_names: Optional[str] = None) -> str:
     """Get schema of 'orders', 'customers', or 'returns'."""
@@ -80,7 +72,6 @@ def sql_db_schema(table_names: Optional[str] = None) -> str:
     return schema_tool.invoke({"table_names": table_names or ""})
 
 
-# Tool 3: Initiate Return
 @mcp.tool()
 async def initiate_return(order_id: str, product_ids: List[str]) -> str:
     """Initiate a return record."""
@@ -88,7 +79,6 @@ async def initiate_return(order_id: str, product_ids: List[str]) -> str:
         return_id = f"RET-{uuid.uuid4().hex[:6].upper()}"
         return_date = datetime.date.today().isoformat()
         products_json = json.dumps(product_ids)
-
         with write_engine.connect() as conn:
             conn.execute(
                 text(
@@ -101,7 +91,6 @@ async def initiate_return(order_id: str, product_ids: List[str]) -> str:
         return f"Error: {e}"
 
 
-# Tool 4: Product Database Query
 @mcp.tool()
 async def query_product_database(
         product_name: Optional[str] = None,
@@ -110,6 +99,12 @@ async def query_product_database(
         size: Optional[str] = None
 ) -> str:
     """Search the 'products' table. Returns price, stock, and details."""
+
+    # 🚨 CONFIG: YOUR CLOUDINARY BASE URL 🚨
+    # Make sure this is correct!
+    CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/"
+
+
     if product_name == "None": product_name = None
     if category == "None": category = None
     if colour == "None": colour = None
@@ -162,7 +157,19 @@ async def query_product_database(
                 else:
                     stock_status = "Stock unknown"
 
-                image_tag = f'<img src="{row["image_url"]}" alt="Image" />' if row['image_url'] else ""
+                # --- 🛠️ IMAGE URL FIX START ---
+                raw_url = row['image_url']
+                image_tag = ""
+                if raw_url:
+                    # 1. Strip any previous path (like localhost or http://...)
+                    # This leaves just "dress.jpg"
+                    filename = raw_url.split("/")[-1]
+
+                    # 2. Build the correct Cloudinary URL
+                    full_url = f"{CLOUDINARY_BASE_URL}{filename}"
+
+                    image_tag = f'<img src="{full_url}" alt="{row["product_name"]}" />'
+                # --- 🛠️ IMAGE URL FIX END ---
 
                 formatted_results.append(
                     f"Product: {row['product_name']}\nPrice: {row['price']}\nColour: {row['colour']}\nSize: {row['size']}\nDescription: {row['description']}\nStatus: {stock_status}\n{image_tag}"
@@ -173,7 +180,6 @@ async def query_product_database(
         return f"Error: Failed to query product database. Reason: {e}"
 
 
-# Tool 5: Restock Notification
 @mcp.tool()
 async def add_restock_notification(product_name: str, customer_email: str, size: str,
                                    colour: Optional[str] = None) -> str:
