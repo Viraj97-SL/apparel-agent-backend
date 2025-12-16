@@ -17,7 +17,7 @@ DB_PATH = os.path.join(project_root, "apparel.db")
 
 # --- CONFIGURATION: CLOUDINARY ---
 # Using the URL from your provided code
-CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/"
+CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
 
 # In-memory storage
 vto_sessions: Dict[str, dict] = {}
