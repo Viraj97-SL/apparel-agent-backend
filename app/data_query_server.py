@@ -102,7 +102,7 @@ async def query_product_database(
 
     # 🚨 CONFIG: YOUR CLOUDINARY BASE URL 🚨
     # Make sure this is correct!
-    CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/"
+    CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
 
 
     if product_name == "None": product_name = None
