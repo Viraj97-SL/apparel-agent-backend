@@ -6,9 +6,14 @@ import pandas as pd
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 
-# Database and Excel paths
-DB_PATH = os.path.join(project_root, "apparel.db")
-EXCEL_PATH = os.path.join(project_root, "Pamorya Stock(1).xlsx")
+# Database and Excel paths (for local)
+#DB_PATH = os.path.join(project_root, "apparel.db")
+#EXCEL_PATH = os.path.join(project_root, "Pamorya Stock(1).xlsx")
+
+#cloud deployment
+# Just look for files in the same folder as this script
+DB_PATH = "apparel.db"
+EXCEL_PATH = "Pamorya Stock(1).xlsx"
 
 
 def create_tables(conn):
@@ -184,6 +189,28 @@ def populate_database(conn):
         import traceback
         traceback.print_exc()
 
+
+# --- Added this to the bottom of db_builder.py ---
+
+def init_db():
+    """Wrapper to create tables from server.py"""
+    print("Creating tables...")
+    conn = sqlite3.connect(DB_PATH)
+    create_tables(conn)
+    conn.close()
+
+
+def populate_initial_data():
+    """Wrapper to populate data from server.py"""
+    if not os.path.exists(EXCEL_PATH):
+        print(f"❌ ERROR: Excel file not found at {EXCEL_PATH}")
+        print("Did you forget to 'git add' the Excel file?")
+        return
+
+    print("Populating data...")
+    conn = sqlite3.connect(DB_PATH)
+    populate_database(conn)
+    conn.close()
 
 if __name__ == "__main__":
     if not os.path.exists(EXCEL_PATH):

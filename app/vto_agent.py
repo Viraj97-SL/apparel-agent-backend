@@ -71,13 +71,14 @@ def get_product_image_from_db(product_query: str):
 def download_image_temp(url: str, filename: str) -> str:
     """
     Smart Downloader:
-    - If URL is 'localhost', it copies the file directly from disk (Avoiding Deadlock).
+    - If URL is 'localhost' or local path, it copies the file directly.
     - If URL is remote (http...), it downloads it.
     """
     temp_path = f"temp_{filename}.jpg"
 
-    # --- DEADLOCK FIX: HANDLE LOCALHOST ---
-    if "localhost" in url or "127.0.0.1" in url:
+    # --- DEADLOCK FIX: HANDLE LOCALHOST / LOCAL FILES ---
+    # Adjust this logic if your DB stores paths like "product_images/dress.jpg"
+    if "localhost" in url or "127.0.0.1" in url or not url.startswith("http"):
         try:
             # Extract the filename from the URL (e.g., "PMSP021.jpg")
             image_name = os.path.basename(url)
@@ -90,6 +91,8 @@ def download_image_temp(url: str, filename: str) -> str:
                 return temp_path
             else:
                 print(f"   -> Error: Local file not found at {local_source_path}")
+                # Fallback: Create a dummy file or return None?
+                # For now, let's return None to trigger error handling
                 return None
         except Exception as e:
             print(f"   -> Local Copy Error: {e}")
@@ -140,18 +143,18 @@ def handle_vto_message(thread_id: str, user_text: str, image_path: Optional[str]
 
 
 def run_replicate_vto(thread_id: str, user_image_path: str, product_image_url: str, product_name: str) -> str:
-    """Sends request to REPLICATE API (Using the Specific Version from your screenshot)."""
+    """Sends request to REPLICATE API and returns DIRECT URL."""
     print(f"--- STARTING VTO (Replicate) ---")
 
     # 1. Get Product Image (Local Copy or Download)
+    # We need the physical file to send TO Replicate
     local_product_path = download_image_temp(product_image_url, "product_img")
     if not local_product_path:
-        return "Error: Could not access the product image (File not found)."
+        return "Error: Could not access the product image (File not found locally)."
 
     try:
         # 2. Call Replicate API
-        # We use the EXACT version hash from your screenshot
-        output_url = replicate.run(
+        output = replicate.run(
             "cuuupid/idm-vton:0513734a452173b8173e907e3a59d19a36266e55b48528559432bd21c7d7e985",
             input={
                 "garm_img": open(local_product_path, "rb"),  # The Dress
@@ -162,29 +165,21 @@ def run_replicate_vto(thread_id: str, user_image_path: str, product_image_url: s
             }
         )
 
-        print(f"VTO Success! Replicate URL: {output_url}")
+        # Replicate usually returns a list or a string depending on the model version
+        # IDM-VTON usually returns a URI string
+        output_url = str(output)
+        print(f"✅ VTO Success! Replicate URL: {output_url}")
+
         increment_user_usage(thread_id)
 
-        # 3. Save Result
-        output_filename = f"vto_{uuid.uuid4().hex[:8]}.jpg"
-        save_path = os.path.join("uploaded_images", output_filename)
-
-        # Replicate returns a URL string directly
-        response = requests.get(str(output_url), stream=True)
-        if response.status_code == 200:
-            with open(save_path, 'wb') as f:
-                f.write(response.content)
-        else:
-            return "Error: Generated image could not be saved."
-
-        # Clean up temp file
+        # 3. Clean up temp product file (User image is managed by main server loop)
         if os.path.exists(local_product_path):
             os.remove(local_product_path)
 
-        web_path = f"uploaded_images/{output_filename}"
-
-        return f"Here is how the {product_name} looks on you!\n\n<img src=\"http://127.0.0.1:8000/{web_path}\" alt=\"Virtual Try-On Result\" />"
+        # 4. Return Direct Markdown Image
+        # We do NOT save the result locally. We serve the Replicate link directly.
+        return f"Here is how the {product_name} looks on you!\n\n![Virtual Try-On Result]({output_url})"
 
     except Exception as e:
-        print(f"Replicate Error: {e}")
-        return f"Sorry, I encountered an error generating the image. ({str(e)})"
+        print(f"❌ Replicate Error: {e}")
+        return f"Sorry, I encountered an error generating the image. Please try again later."
