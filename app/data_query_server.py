@@ -98,13 +98,19 @@ async def query_product_database(
         colour: Optional[str] = None,
         size: Optional[str] = None
 ) -> str:
-    """Search the 'products' table. Returns price, stock, and details."""
+    """
+    Search for products in the database.
 
-    # 🚨 CONFIG: YOUR CLOUDINARY BASE URL 🚨
-    # Make sure this is correct!
+    CRITICAL INSTRUCTION FOR AGENT:
+    - Do NOT call this tool multiple times in parallel. Call it ONCE with the best specific details you have.
+    - You CAN combine filters (e.g., product_name="Verona" AND colour="Blue").
+    - If you are unsure of the exact name, use a partial name.
+    """
+
+    # 🚨 CONFIG: Cloudinary Path 🚨
     CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
 
-
+    # Clean inputs
     if product_name == "None": product_name = None
     if category == "None": category = None
     if colour == "None": colour = None
@@ -125,15 +131,21 @@ async def query_product_database(
             """
     params = {}
 
+    # --- LOGIC: Combine filters intelligently ---
+    # We use 'AND' so we can drill down (e.g. Name="Dress" AND Colour="Blue")
+
     if product_name:
         query += " AND p.product_name LIKE :product_name"
         params['product_name'] = f"%{product_name}%"
+
     if category:
         query += " AND p.category LIKE :category"
         params['category'] = f"%{category}%"
+
     if colour:
         query += " AND p.colour LIKE :colour"
         params['colour'] = f"%{colour}%"
+
     if size:
         query += " AND i.size LIKE :size"
         params['size'] = f"%{size}%"
@@ -147,7 +159,8 @@ async def query_product_database(
             results = cursor.execute(query, params).fetchall()
 
             if not results:
-                return "No products found matching those criteria."
+                # Fallback: If strict search failed, try searching generic description
+                return "No exact match found. Try searching with fewer details (e.g., just the name or just the category)."
 
             formatted_results = []
             for row in results:
@@ -157,19 +170,13 @@ async def query_product_database(
                 else:
                     stock_status = "Stock unknown"
 
-                # --- 🛠️ IMAGE URL FIX START ---
+                # --- IMAGE URL FIX ---
                 raw_url = row['image_url']
                 image_tag = ""
                 if raw_url:
-                    # 1. Strip any previous path (like localhost or http://...)
-                    # This leaves just "dress.jpg"
                     filename = raw_url.split("/")[-1]
-
-                    # 2. Build the correct Cloudinary URL
                     full_url = f"{CLOUDINARY_BASE_URL}{filename}"
-
                     image_tag = f'<img src="{full_url}" alt="{row["product_name"]}" />'
-                # --- 🛠️ IMAGE URL FIX END ---
 
                 formatted_results.append(
                     f"Product: {row['product_name']}\nPrice: {row['price']}\nColour: {row['colour']}\nSize: {row['size']}\nDescription: {row['description']}\nStatus: {stock_status}\n{image_tag}"
