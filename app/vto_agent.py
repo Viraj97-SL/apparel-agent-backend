@@ -8,18 +8,16 @@ from datetime import date
 from typing import Optional, Dict
 from dotenv import load_dotenv
 
-# Ensure env vars are loaded
 load_dotenv()
 
 # Setup Paths
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(project_root, "apparel.db")
 
-# --- CONFIGURATION: CLOUDINARY ---
-# Using the URL from your provided code
+# --- CONFIGURATION ---
+# We keep your working Cloudinary path
 CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
 
-# In-memory storage
 vto_sessions: Dict[str, dict] = {}
 user_usage_tracker: Dict[str, dict] = {}
 DAILY_LIMIT = 3
@@ -56,17 +54,12 @@ def get_product_image_from_db(product_query: str):
 
 
 def download_image_temp(url_or_filename: str, filename_tag: str) -> str:
-    """
-    Downloads image from Cloudinary (or any URL) to a temp file for Replicate.
-    """
     temp_path = f"temp_{filename_tag}.jpg"
-    final_url = url_or_filename
+    final_url = str(url_or_filename)
 
-    # --- CRITICAL FIX: FORCE CLOUDINARY URL ---
-    # If the URL is localhost, or just a filename (e.g. "PMW015.jpg"), build the Cloudinary link.
-    if "localhost" in str(final_url) or "127.0.0.1" in str(final_url) or not str(final_url).startswith("http"):
-        # Extract just the filename (e.g., gets "PMW015.jpg" from "path/to/PMW015.jpg")
-        clean_name = os.path.basename(str(final_url))
+    # Clean up URL if needed
+    if "localhost" in final_url or "127.0.0.1" in final_url or not final_url.startswith("http"):
+        clean_name = os.path.basename(final_url)
         final_url = f"{CLOUDINARY_BASE_URL}{clean_name}"
 
     print(f"   -> Downloading from: {final_url}")
@@ -115,11 +108,10 @@ def handle_vto_message(thread_id: str, user_text: str, image_path: Optional[str]
 
 
 def run_replicate_vto(thread_id: str, user_image_path: str, product_image_url: str, product_name: str) -> str:
-    # Now this will correctly download from Cloudinary instead of crashing looking for local files
     local_product_path = download_image_temp(product_image_url, "product_img")
 
     if not local_product_path:
-        return "Error: Could not access the product image (Download failed)."
+        return "Error: Could not find the product image. Please ensure the product image exists in Cloudinary."
 
     try:
         output = replicate.run(
@@ -133,14 +125,24 @@ def run_replicate_vto(thread_id: str, user_image_path: str, product_image_url: s
             }
         )
 
-        output_url = str(output)
+        # --- FIX 1: Safely handle the output list ---
+        output_url = ""
+        if isinstance(output, list) and len(output) > 0:
+            output_url = output[0]  # Get the first URL
+        elif isinstance(output, str):
+            output_url = output
+        else:
+            print(f"❌ Replicate returned empty or invalid output: {output}")
+            return "Sorry, the Virtual Try-On failed to generate an image. Please try a different photo."
+
         increment_user_usage(thread_id)
 
         if os.path.exists(local_product_path):
             os.remove(local_product_path)
 
-        return f"Here is how the {product_name} looks on you!\n\n![Virtual Try-On Result]({output_url})"
+        # --- FIX 2: Return HTML <img> tag (Matches product cards) ---
+        return f"Here is how the {product_name} looks on you!<br><br><img src=\"{output_url}\" alt=\"Virtual Try-On Result\" style=\"max-width: 100%; border-radius: 8px;\" />"
 
     except Exception as e:
         print(f"VTO Error: {e}")
-        return "Sorry, I had trouble generating the image. Please try again."
+        return "Sorry, I had trouble generating the image. Please try again later."
