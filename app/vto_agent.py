@@ -105,43 +105,39 @@ def handle_vto_message(thread_id: str, user_text: str, image_path: Optional[str]
     return run_replicate_vto(thread_id, session["user_image"], session["product_image"], session["product_name"])
 
 
+# --- In app/vto_agent.py ---
+
 def run_replicate_vto(thread_id: str, user_image_path: str, product_image_url: str, product_name: str) -> str:
+    # 1. Download Product Image
     local_product_path = download_image_temp(product_image_url, "product_img")
 
     if not local_product_path:
         return "Error: Could not find the product image on Cloudinary."
 
     try:
+        # 2. Run Replicate (IDM-VTON) with IMPROVED PARAMETERS
         output = replicate.run(
             "cuuupid/idm-vton:0513734a452173b8173e907e3a59d19a36266e55b48528559432bd21c7d7e985",
             input={
                 "garm_img": open(local_product_path, "rb"),
                 "human_img": open(user_image_path, "rb"),
                 "garment_des": product_name,
-                "seed": 42,
-                "crop": False
+                # --- PARAMETER CHANGES ---
+                "crop": True,  # CHANGED from False to True. Helps focus on the person.
+                # "seed": 42,   # REMOVED. Removing fixed seed allows natural variation.
+                # -------------------------
             }
         )
 
-        # --- FINAL FIX: FORCE STRING CONVERSION ---
-        # This handles Objects, Strings, and Lists all in one go.
+        # Force convert object to String to handle Replicate's file output object
         output_url = str(output)
-
-        # Clean list brackets if they exist (e.g. "['url']")
-        if output_url.startswith("['") and output_url.endswith("']"):
-            output_url = output_url[2:-2]
-
-        print(f"✅ VTO Success! URL: {output_url}")
-
-        if not output_url.startswith("http"):
-            print(f"❌ Still invalid URL: {output_url}")
-            return "Sorry, the image generation failed. Please try again."
 
         increment_user_usage(thread_id)
 
         if os.path.exists(local_product_path):
             os.remove(local_product_path)
 
+        # Return HTML image for the chat window
         return f"Here is how the {product_name} looks on you!<br><br><img src=\"{output_url}\" alt=\"Virtual Try-On Result\" style=\"max-width: 100%; border-radius: 8px;\" />"
 
     except Exception as e:
