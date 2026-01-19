@@ -15,7 +15,6 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(project_root, "apparel.db")
 
 # --- CONFIGURATION ---
-# We keep your working Cloudinary path
 CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
 
 vto_sessions: Dict[str, dict] = {}
@@ -57,7 +56,6 @@ def download_image_temp(url_or_filename: str, filename_tag: str) -> str:
     temp_path = f"temp_{filename_tag}.jpg"
     final_url = str(url_or_filename)
 
-    # Clean up URL if needed
     if "localhost" in final_url or "127.0.0.1" in final_url or not final_url.startswith("http"):
         clean_name = os.path.basename(final_url)
         final_url = f"{CLOUDINARY_BASE_URL}{clean_name}"
@@ -111,7 +109,7 @@ def run_replicate_vto(thread_id: str, user_image_path: str, product_image_url: s
     local_product_path = download_image_temp(product_image_url, "product_img")
 
     if not local_product_path:
-        return "Error: Could not find the product image. Please ensure the product image exists in Cloudinary."
+        return "Error: Could not find the product image on Cloudinary."
 
     try:
         output = replicate.run(
@@ -125,22 +123,25 @@ def run_replicate_vto(thread_id: str, user_image_path: str, product_image_url: s
             }
         )
 
-        # --- FIX 1: Safely handle the output list ---
-        output_url = ""
-        if isinstance(output, list) and len(output) > 0:
-            output_url = output[0]  # Get the first URL
-        elif isinstance(output, str):
-            output_url = output
-        else:
-            print(f"❌ Replicate returned empty or invalid output: {output}")
-            return "Sorry, the Virtual Try-On failed to generate an image. Please try a different photo."
+        # --- FINAL FIX: FORCE STRING CONVERSION ---
+        # This handles Objects, Strings, and Lists all in one go.
+        output_url = str(output)
+
+        # Clean list brackets if they exist (e.g. "['url']")
+        if output_url.startswith("['") and output_url.endswith("']"):
+            output_url = output_url[2:-2]
+
+        print(f"✅ VTO Success! URL: {output_url}")
+
+        if not output_url.startswith("http"):
+            print(f"❌ Still invalid URL: {output_url}")
+            return "Sorry, the image generation failed. Please try again."
 
         increment_user_usage(thread_id)
 
         if os.path.exists(local_product_path):
             os.remove(local_product_path)
 
-        # --- FIX 2: Return HTML <img> tag (Matches product cards) ---
         return f"Here is how the {product_name} looks on you!<br><br><img src=\"{output_url}\" alt=\"Virtual Try-On Result\" style=\"max-width: 100%; border-radius: 8px;\" />"
 
     except Exception as e:
