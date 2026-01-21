@@ -33,28 +33,26 @@ google_api_key = os.getenv("GOOGLE_API_KEY")
 if not google_api_key:
     log_warning("GOOGLE_API_KEY not found in env.")
 
-# --- 2. Database Setup (SQLAlchemy) ---
-# We use the 'engine' we created in app.database
-# include_tables limits what the generic SQL tool can "see"
-db = SQLDatabase(engine, include_tables=['orders', 'customers', 'returns'])
-
-# --- 3. Initialize LLM (Gemini Flash) ---
+# --- 2. Initialize LLM (Gemini Flash) ---
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash-8b",
     google_api_key=google_api_key,
     temperature=0
 )
 
-# --- 4. Initialize MCP Server ---
+# --- 3. Initialize MCP Server ---
 mcp = FastMCP("data_query")
 
 
-# --- 5. Tools ---
+# --- 4. Tools ---
 
 @mcp.tool()
 def sql_db_query(query: str) -> str:
     """Execute a SQL query on 'orders', 'customers', or 'returns'."""
     try:
+        # LAZY INITIALIZATION: Only connect when the tool is CALLED
+        db = SQLDatabase(engine, include_tables=['orders', 'customers', 'returns'])
+
         sql_toolkit = SQLDatabaseToolkit(db=db, llm=llm)
         # Find the specific tool from the toolkit
         query_tool = next(t for t in sql_toolkit.get_tools() if t.name == 'sql_db_query')
@@ -67,6 +65,9 @@ def sql_db_query(query: str) -> str:
 def sql_db_schema(table_names: Optional[str] = None) -> str:
     """Get schema of 'orders', 'customers', or 'returns'."""
     try:
+        # LAZY INITIALIZATION: Only connect when the tool is CALLED
+        db = SQLDatabase(engine, include_tables=['orders', 'customers', 'returns'])
+
         sql_toolkit = SQLDatabaseToolkit(db=db, llm=llm)
         schema_tool = next(t for t in sql_toolkit.get_tools() if t.name == 'sql_db_schema')
         return schema_tool.invoke({"table_names": table_names or ""})
