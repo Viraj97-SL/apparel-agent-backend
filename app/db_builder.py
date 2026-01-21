@@ -19,46 +19,49 @@ def clean_column_name(col_name):
 
 
 def populate_initial_data():
-    """Reads Excel with double-header detection and populates the database."""
+    """Reads Excel, handles merged headers AND merged cells, then populates DB."""
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Try CSV first if user uploaded that, otherwise Excel
     excel_path = os.path.join(base_dir, "Pamorya Stock(1).xlsx")
+    csv_path = os.path.join(base_dir, "Pamorya Stock(1) (1).xlsx - Sheet1.csv")
 
-    if not os.path.exists(excel_path):
-        print(f"❌ Excel file not found at: {excel_path}")
+    path_to_use = None
+    if os.path.exists(csv_path):
+        path_to_use = csv_path
+        print(f"Reading CSV file from: {os.path.basename(csv_path)}")
+        # CSVs from Excel often don't have the double-header issue in the same way,
+        # but let's assume the structure is identical.
+        df_raw = pd.read_csv(csv_path, header=None)
+    elif os.path.exists(excel_path):
+        path_to_use = excel_path
+        print(f"Reading Excel file from: {os.path.basename(excel_path)}")
+        df_raw = pd.read_excel(excel_path, header=None)
+    else:
+        print(f"❌ No data file found. Please upload 'Pamorya Stock(1).xlsx' or the CSV.")
         return
 
-    print(f"Reading Excel file from: {os.path.basename(excel_path)}")
     try:
-        # 1. Read RAW data (no header) to inspect first 2 rows
-        df_raw = pd.read_excel(excel_path, header=None)
-
-        # 2. Construct Custom Headers (Merge Row 0 and Row 1)
-        # We take the first row (index 0) and second row (index 1)
+        # --- 1. HANDLE DOUBLE HEADERS ---
+        # Combine Row 0 and Row 1 to make single headers
         row0 = df_raw.iloc[0].fillna('').astype(str).apply(clean_column_name)
         row1 = df_raw.iloc[1].fillna('').astype(str).apply(clean_column_name)
 
         new_headers = []
         for r0, r1 in zip(row0, row1):
-            # Logic: Combine them if both exist, otherwise take the non-empty one
             if r0 and r1 and r0 != r1:
-                combined = f"{r0} {r1}"  # e.g. "Quantity" + "Size" -> "Quantity Size"
+                combined = f"{r0} {r1}"
             elif r1:
-                combined = r1  # e.g. "" + "Size" -> "Size"
+                combined = r1
             else:
-                combined = r0  # e.g. "image_url" + "" -> "image_url"
-
+                combined = r0
             new_headers.append(combined)
 
-        print(f"   -> Constructed Headers: {new_headers}")
-
-        # 3. Apply Headers and Drop the top 2 rows
-        df = df_raw.iloc[2:].copy()  # Data starts at row index 2
+        # Drop the header rows and set new column names
+        df = df_raw.iloc[2:].copy()
         df.columns = new_headers
         df.reset_index(drop=True, inplace=True)
 
-        # 4. Normalize Column Names for Code Compatibility
-        # We need to ensure the code finds 'Quantity Size' even if the merge was messy
-        # Create a mapping for "fuzzy" matching
+        # Map to friendly names
         col_map = {}
         for col in df.columns:
             clean_col = col.lower()
@@ -74,13 +77,31 @@ def populate_initial_data():
                 col_map[col] = "Dress description"
 
         df.rename(columns=col_map, inplace=True)
-        print(f"   -> Final Mapped Columns: {list(df.columns)}")
+
+        # --- 2. CRITICAL FIX: FORWARD FILL MERGED CELLS ---
+        # Identify columns that define the "Product" (and are likely merged in Excel)
+        product_cols = [c for c in df.columns if
+                        c in ['Dress Code', 'Dress Name', 'Colour', 'Dress description', 'Unit Price (LKR)',
+                              'image_url']]
+
+        # Forward Fill: If a cell is empty (NaN), copy the value from the row above it.
+        # This fixes the issue where "Small" has a product name but "Medium" below it does not.
+        df[product_cols] = df[product_cols].ffill()
+
+        # Clean Price (remove non-numeric chars)
+        if 'Unit Price (LKR)' in df.columns:
+            df['Unit Price (LKR)'] = pd.to_numeric(df['Unit Price (LKR)'], errors='coerce').fillna(0)
 
     except Exception as e:
-        print(f"❌ Error reading/processing Excel: {e}")
+        print(f"❌ Error processing file structure: {e}")
         return
 
     db: Session = SessionLocal()
+
+    # Optional: Logic to clear DB if you want to re-seed cleanly
+    # db.query(Inventory).delete()
+    # db.query(Product).delete()
+    # db.commit()
 
     if db.query(Product).count() == 0:
         print("⚠️ Database is empty. Seeding data...")
@@ -88,57 +109,49 @@ def populate_initial_data():
         products_added = 0
         inventory_added = 0
 
-        # Group by unique product attributes
-        # Use .get() to avoid KeyError if a column is slightly different
-        def get_val(row, col_name, default=None):
-            return row[col_name] if col_name in row else default
-
-        # We must identify the "grouping" columns carefully
-        # If 'Dress Code' is missing, fallback to 'Dress Name'
-        group_cols = [c for c in
-                      ['Dress Code', 'Dress Name', 'Colour', 'Dress description', 'Unit Price (LKR)', 'image_url'] if
-                      c in df.columns]
-
-        if not group_cols:
-            print("❌ Critical: Could not find any product grouping columns (Name, Code, etc).")
+        # We group by the "Product Identity"
+        # If 'Dress Name' is missing, we skip.
+        if 'Dress Name' not in df.columns:
+            print("❌ Error: 'Dress Name' column not found.")
             return
 
-        grouped = df.groupby(group_cols)
+        grouped = df.groupby(['Dress Name', 'Colour'])
 
-        for keys, group in grouped:
-            # Unpack keys into a dictionary for easier access
-            data = dict(zip(group_cols, keys if isinstance(keys, tuple) else [keys]))
+        for (name, colour), group in grouped:
+            # Take the first row of the group for product details
+            first_row = group.iloc[0]
 
-            name = data.get('Dress Name', 'Unknown Product')
-            price = data.get('Unit Price (LKR)', 0)
-            desc = data.get('Dress description', '')
-            img = data.get('image_url', None)
-            colour = data.get('Colour', 'Unknown')
+            price = first_row.get('Unit Price (LKR)', 0)
+            desc = first_row.get('Dress description', '')
+            img = first_row.get('image_url', None)
 
+            # Create Product
             new_product = Product(
-                product_name=name,
+                product_name=str(name).strip(),
                 category="Dresses",
-                price=float(price) if pd.notna(price) and str(price).replace('.', '').isdigit() else 0.0,
-                description=desc,
-                image_url=img if pd.notna(img) else None,
-                colour=colour
+                price=float(price),
+                description=str(desc).strip(),
+                image_url=str(img).strip() if pd.notna(img) else None,
+                colour=str(colour).strip()
             )
             db.add(new_product)
-            db.flush()
+            db.flush()  # Get ID
             products_added += 1
 
+            # Iterate through ALL rows in this group to get sizes
             for _, row in group.iterrows():
-                # Flexible lookup for size/qty
                 size = row.get('Quantity Size', row.get('Size', 'Standard'))
                 qty = row.get('Quantity for each', 0)
 
-                inv_item = Inventory(
-                    product_id=new_product.product_id,
-                    size=str(size).strip(),
-                    stock_quantity=int(qty) if pd.notna(qty) and str(qty).isdigit() else 0
-                )
-                db.add(inv_item)
-                inventory_added += 1
+                # Only add if we have a valid size
+                if pd.notna(size) and str(size).strip() != "":
+                    inv_item = Inventory(
+                        product_id=new_product.product_id,
+                        size=str(size).strip(),
+                        stock_quantity=int(qty) if pd.notna(qty) else 0
+                    )
+                    db.add(inv_item)
+                    inventory_added += 1
 
         db.commit()
         print(f"✅ Success! Added {products_added} products and {inventory_added} inventory items.")
