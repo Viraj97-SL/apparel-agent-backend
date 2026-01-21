@@ -2,8 +2,6 @@ import os
 import json
 import sys
 import asyncio
-
-import genai
 from dotenv import load_dotenv
 from typing import TypedDict, Annotated, Sequence, List
 import operator
