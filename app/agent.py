@@ -53,14 +53,14 @@ class AgentState(TypedDict):
 llm_supervisor = ChatGoogleGenerativeAI(
     model="gemini-2.5-pro",
     temperature=0.2,
-    google_api_key=os.getenv("GEMINI_API_KEY")
+    google_api_key=os.getenv("GOOGLE_API_KEY")
 )
 
 # 2. The "Fast Worker" (Data / Web / Tool Agents)
 llm_worker = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     temperature=0.0,
-    google_api_key=os.getenv("GEMINI_API_KEY")
+    google_api_key=os.getenv("GOOGLE_API_KEY")
 )
 
 
