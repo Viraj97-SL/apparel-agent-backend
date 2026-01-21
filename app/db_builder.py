@@ -98,10 +98,12 @@ def populate_initial_data():
 
     db: Session = SessionLocal()
 
-    # Optional: Logic to clear DB if you want to re-seed cleanly
-    # db.query(Inventory).delete()
-    # db.query(Product).delete()
-    # db.commit()
+    # --- UNCOMMENT THESE LINES TO FORCE A RE-SEED ---
+    # This deletes all existing rows so we can import the fixed data
+    print("⚠️  Force-Clearing Database for fresh seed...")
+    db.query(Inventory).delete()
+    db.query(Product).delete()
+    db.commit()
 
     if db.query(Product).count() == 0:
         print("⚠️ Database is empty. Seeding data...")
