@@ -2,6 +2,8 @@ import os
 import json
 import sys
 import asyncio
+
+import genai
 from dotenv import load_dotenv
 from typing import TypedDict, Annotated, Sequence, List
 import operator
@@ -49,18 +51,20 @@ class AgentState(TypedDict):
 # --- 2. Define Agents and Tools ---
 
 # --- HYBRID BRAIN SETUP ---
-
-# 1. The "Big Brain" (For the Supervisor)
-llm_supervisor = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    api_key=GROQ_API_KEY
+# 1. The "Big Brain" (Supervisor)
+llm_supervisor = ChatGoogleGenerativeAI(
+    model="gemini-2.5-pro",
+    temperature=0.2,
+    google_api_key=os.getenv("GEMINI_API_KEY")
 )
 
-# 2. The "Fast Worker" (For Data & Web Agents)
-llm_worker = ChatGroq(
-    model="llama-3.1-8b-instant",
-    api_key=GROQ_API_KEY
+# 2. The "Fast Worker" (Data / Web / Tool Agents)
+llm_worker = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    temperature=0.0,
+    google_api_key=os.getenv("GEMINI_API_KEY")
 )
+
 
 # --- Agent 1: The Policy Agent (RAG) ---
 print("Initializing Policy Agent (RAG)...")
