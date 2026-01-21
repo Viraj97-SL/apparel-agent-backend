@@ -76,19 +76,29 @@ print("Policy Agent initialized.")
 print("Initializing Data Query Tools via MCP...")
 python_path = sys.executable  # Path to your Python executable
 
+# ... inside app/agent.py ...
+
 async def initialize_data_tools():
+    # 1. Get the project root directory (one level up from this file)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir)
+
+    # 2. Prepare the environment variables
+    # We copy the current environment and add PYTHONPATH so the subprocess can find 'app'
+    env_vars = dict(os.environ)
+    env_vars["PYTHONPATH"] = project_root
+
     client = MultiServerMCPClient(
         {
             "data_query": {
                 "transport": "stdio",
                 "command": python_path,
-                "args": [os.path.join(os.path.dirname(__file__), "data_query_server.py")],
-                # CRITICAL FIX: Pass environment variables (API Keys) to the subprocess
-                "env": dict(os.environ)
+                "args": [os.path.join(current_dir, "data_query_server.py")],
+                "env": env_vars  # <--- Use the updated environment with PYTHONPATH
             }
         }
     )
-    tools = await client.get_tools()  # Load MCP tools as LangChain tools
+    tools = await client.get_tools()
     return tools, client
 
 # Run the async init and assign results
