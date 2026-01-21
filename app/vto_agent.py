@@ -1,18 +1,16 @@
 import os
-import sqlite3
 import requests
 import shutil
-import uuid
 import replicate
 from datetime import date
 from typing import Optional, Dict
 from dotenv import load_dotenv
 
-load_dotenv()
+# --- NEW IMPORTS ---
+from app.database import SessionLocal
+from app.models import Product
 
-# Setup Paths
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(project_root, "apparel.db")
+load_dotenv()
 
 # --- CONFIGURATION ---
 CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
@@ -39,16 +37,22 @@ def increment_user_usage(thread_id: str):
 
 
 def get_product_image_from_db(product_query: str):
+    """
+    Looks up a product image URL in the database using SQLAlchemy.
+    """
+    session = SessionLocal()
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT product_name, image_url FROM products WHERE product_name LIKE ? LIMIT 1",
-                           (f"%{product_query}%",))
-            result = cursor.fetchone()
-            if result:
-                return {"name": result[0], "url": result[1]}
+        # Search for product by name (case-insensitive partial match)
+        product = session.query(Product).filter(Product.product_name.ilike(f"%{product_query}%")).first()
+
+        if product and product.image_url:
+            return {"name": product.product_name, "url": product.image_url}
+
     except Exception as e:
-        print(f"DB Error: {e}")
+        print(f"DB Error in VTO: {e}")
+    finally:
+        session.close()
+
     return None
 
 
@@ -56,6 +60,7 @@ def download_image_temp(url_or_filename: str, filename_tag: str) -> str:
     temp_path = f"temp_{filename_tag}.jpg"
     final_url = str(url_or_filename)
 
+    # Clean up URL if needed
     if "localhost" in final_url or "127.0.0.1" in final_url or not final_url.startswith("http"):
         clean_name = os.path.basename(final_url)
         final_url = f"{CLOUDINARY_BASE_URL}{clean_name}"
@@ -105,39 +110,42 @@ def handle_vto_message(thread_id: str, user_text: str, image_path: Optional[str]
     return run_replicate_vto(thread_id, session["user_image"], session["product_image"], session["product_name"])
 
 
-# --- In app/vto_agent.py ---
-
 def run_replicate_vto(thread_id: str, user_image_path: str, product_image_url: str, product_name: str) -> str:
-    # 1. Download Product Image
     local_product_path = download_image_temp(product_image_url, "product_img")
 
     if not local_product_path:
         return "Error: Could not find the product image on Cloudinary."
 
     try:
-        # 2. Run Replicate (IDM-VTON) with IMPROVED PARAMETERS
         output = replicate.run(
             "cuuupid/idm-vton:0513734a452173b8173e907e3a59d19a36266e55b48528559432bd21c7d7e985",
             input={
                 "garm_img": open(local_product_path, "rb"),
                 "human_img": open(user_image_path, "rb"),
                 "garment_des": product_name,
-                # --- PARAMETER CHANGES ---
-                "crop": True,  # CHANGED from False to True. Helps focus on the person.
-                # "seed": 42,   # REMOVED. Removing fixed seed allows natural variation.
-                # -------------------------
+                "crop": True,
+                "seed": 42
             }
         )
 
-        # Force convert object to String to handle Replicate's file output object
+        # Force convert object to String
         output_url = str(output)
+
+        # Clean list brackets if they exist
+        if output_url.startswith("['") and output_url.endswith("']"):
+            output_url = output_url[2:-2]
+
+        print(f"✅ VTO Success! URL: {output_url}")
+
+        if not output_url.startswith("http"):
+            print(f"❌ Still invalid URL: {output_url}")
+            return "Sorry, the image generation failed. Please try again."
 
         increment_user_usage(thread_id)
 
         if os.path.exists(local_product_path):
             os.remove(local_product_path)
 
-        # Return HTML image for the chat window
         return f"Here is how the {product_name} looks on you!<br><br><img src=\"{output_url}\" alt=\"Virtual Try-On Result\" style=\"max-width: 100%; border-radius: 8px;\" />"
 
     except Exception as e:
