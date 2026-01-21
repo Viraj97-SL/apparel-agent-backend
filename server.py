@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 # --- DB IMPORTS ---
 from app.db_builder import init_db, populate_initial_data
+from app.db_builder import init_db, populate_initial_data
 
 # --- SECURITY: Rate Limiting Imports ---
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -39,30 +40,17 @@ MAX_FILE_SIZE = 5 * 1024 * 1024
 async def lifespan(app: FastAPI):
     print("🔄 Lifespan: Checking database status...")
     try:
-        # 1. Ensure Tables Exist
+        # 1. Initialize Tables (Postgres)
         init_db()
 
-        # 2. Check for Data (Using direct SQLite connection for safety)
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM products")
-        count = cursor.fetchone()[0]
-        conn.close()
-
-        if count == 0:
-            print("⚠️ Database is empty. Seeding from Excel...")
-            populate_initial_data()
-            print("✅ Database populated successfully!")
-        else:
-            print(f"✅ Database has data ({count} products). No action needed.")
+        # 2. Populate Data
+        populate_initial_data()
 
     except Exception as e:
         print(f"❌ Startup Error: {e}")
 
-    yield  # <--- APP RUNS HERE
-
+    yield
     print("🛑 Shutdown: Server closing...")
-
 
 # --- INITIALIZE APP ---
 # 1. Setup the Rate Limiter
