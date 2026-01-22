@@ -3,7 +3,7 @@ import sys
 import json
 import uuid
 import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Union
 
 # Third-party imports
 from dotenv import load_dotenv
@@ -254,25 +254,47 @@ async def list_products(limit: int = 5) -> str:
         session.close()
 
 
+# ... (keep other imports) ...
+
 @mcp.tool()
 async def create_draft_order(
         customer_email: str,
         customer_name: str,
         shipping_address: str,
         phone_number: str,
-        items: str
+        items: Union[str, List[Dict[str, Any]]]  # <--- Accept BOTH types
 ) -> str:
     """
     Creates a new order in the database.
-    'items' must be a JSON string like: '[{"product_name": "Verona", "size": "M", "quantity": 1}]'
+    'items' can be a JSON string OR a list of objects.
+    Example: [{"product_name": "Verona", "size": "M", "quantity": 1}]
     """
     session = SessionLocal()
     try:
-        # 1. Parse Items
-        try:
-            item_list = json.loads(items)
-        except:
-            return "Error: Items must be valid JSON."
+        # --- ROBUST INPUT HANDLING ---
+        # 1. Check what the AI sent us
+        item_list = []
+
+        if isinstance(items, str):
+            # If it's a string, try to parse it as JSON
+            try:
+                # Clean up potential markdown formatting like ```json ... ```
+                cleaned_items = items.strip()
+                if cleaned_items.startswith("```"):
+                    cleaned_items = cleaned_items.split("```")[1]
+                    if cleaned_items.startswith("json"):
+                        cleaned_items = cleaned_items[4:]
+
+                item_list = json.loads(cleaned_items)
+            except json.JSONDecodeError:
+                return "Error: 'items' was a string but could not be parsed as valid JSON."
+
+        elif isinstance(items, list):
+            # If it's already a list, use it directly
+            item_list = items
+
+        else:
+            return f"Error: 'items' received unexpected type: {type(items)}. Expected JSON string or List."
 
         # 2. Find/Create Customer
         customer = session.query(Customer).filter(Customer.email == customer_email).first()
@@ -284,7 +306,7 @@ async def create_draft_order(
                 shipping_address=shipping_address
             )
             session.add(customer)
-            session.flush()  # Get ID
+            session.flush()
         else:
             # Update info
             customer.full_name = customer_name
@@ -295,10 +317,22 @@ async def create_draft_order(
         total_amount = 0.0
         order_items_objects = []
 
+        if not item_list:
+            return "Error: No items provided in the order."
+
         for item in item_list:
-            p_name = item.get("product_name")
+            # Flexible dictionary access
+            p_name = item.get("product_name") or item.get("product")
             size = item.get("size")
-            qty = int(item.get("quantity", 1))
+
+            # Handle quantity safely (convert string "1" to int 1)
+            try:
+                qty = int(item.get("quantity", 1))
+            except:
+                qty = 1
+
+            if not p_name or not size:
+                return f"Error: Item is missing product_name or size. Data: {item}"
 
             # Find Product
             product = session.query(Product).filter(Product.product_name.ilike(f"%{p_name}%")).first()
@@ -314,14 +348,13 @@ async def create_draft_order(
             if not inventory or inventory.stock_quantity < qty:
                 return f"Error: Insufficient stock for '{p_name}' (Size {size})."
 
-            # Deduct Stock (Simple Reservation)
+            # Deduct Stock
             inventory.stock_quantity -= qty
 
             # Add to total
             line_total = product.price * qty
             total_amount += line_total
 
-            # Create Order Item Object
             order_item = OrderItem(
                 product_name=product.product_name,
                 size=size,
@@ -337,9 +370,8 @@ async def create_draft_order(
             total_amount=total_amount
         )
         session.add(new_order)
-        session.flush()  # Get Order ID
+        session.flush()
 
-        # Link items to order
         for obj in order_items_objects:
             obj.order_id = new_order.order_id
             session.add(obj)
@@ -357,7 +389,6 @@ async def create_draft_order(
         return f"Error creating order: {str(e)}"
     finally:
         session.close()
-
 
 @mcp.tool()
 async def generate_payment_link(order_id: str) -> str:
