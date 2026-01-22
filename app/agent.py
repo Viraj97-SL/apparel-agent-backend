@@ -358,6 +358,7 @@ def check_for_tool_calls(state: AgentState) -> str:
 
 
 # --- 7. Build the Graph ---
+# --- 7. Build the Graph ---
 print("Building graph...")
 workflow = StateGraph(AgentState)
 
@@ -365,8 +366,15 @@ workflow = StateGraph(AgentState)
 workflow.add_node("supervisor", supervisor_router)
 workflow.add_node("rag_agent", rag_agent_node)
 workflow.add_node("data_query_agent", data_query_agent_node)
-workflow.add_node("sales_agent", sales_agent_node)  # <--- Added Sales Agent
+workflow.add_node("sales_agent", sales_agent_node)
+
+# --- CRITICAL FIX: Split Executors ---
+# We use the same function logic, but register it as two distinct nodes.
+# This allows us to route "Data" results back to the Data Agent
+# and "Sales" results back to the Sales Agent.
 workflow.add_node("data_query_tool_executor", data_query_tool_executor_node)
+workflow.add_node("sales_tool_executor", data_query_tool_executor_node)
+
 workflow.add_node("web_search_agent", web_search_agent_node)
 workflow.add_node("web_search_tool_executor", web_search_tool_executor_node)
 
@@ -380,7 +388,7 @@ workflow.add_conditional_edges(
     {
         "rag_agent": "rag_agent",
         "data_query_agent": "data_query_agent",
-        "sales_agent": "sales_agent",  # <--- Added route
+        "sales_agent": "sales_agent",
         "web_search_agent": "web_search_agent",
         "__end__": END,
     },
@@ -396,30 +404,30 @@ workflow.add_conditional_edges(
     }
 )
 
-# Data query edges
+# Data Query Edges
 workflow.add_conditional_edges(
     "data_query_agent",
     check_for_tool_calls,
     {
-        "continue_with_tools": "data_query_tool_executor",
+        "continue_with_tools": "data_query_tool_executor", # Go to Data Executor
         "supervisor": "supervisor",
     },
 )
 
-# Sales Agent edges (Uses same executor as Data Query)
+# Sales Agent Edges
 workflow.add_conditional_edges(
     "sales_agent",
     check_for_tool_calls,
     {
-        "continue_with_tools": "data_query_tool_executor",
+        "continue_with_tools": "sales_tool_executor", # Go to Sales Executor
         "supervisor": "supervisor",
     },
 )
 
-# Shared Tool Executor Loop Back
-# We need logic to decide WHICH agent to return to, OR we just go back to Supervisor.
-# Returning to Supervisor is safer as it can re-route based on the tool output context.
-workflow.add_edge("data_query_tool_executor", "supervisor")
+# --- CRITICAL FIX: Close the Loop ---
+# Route tool outputs BACK to the agents so they can read the data and answer the user.
+workflow.add_edge("data_query_tool_executor", "data_query_agent")
+workflow.add_edge("sales_tool_executor", "sales_agent")
 
 # Web Search agent edges
 workflow.add_conditional_edges(
