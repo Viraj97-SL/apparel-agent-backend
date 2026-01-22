@@ -2,7 +2,8 @@ import os
 import sys
 import json
 import uuid
-import datetime
+import re
+import difflib  # <--- NEW: For spelling correction
 from typing import List, Optional, Dict, Any, Union
 
 # Third-party imports
@@ -15,12 +16,11 @@ from mcp.server.fastmcp import FastMCP
 
 # --- NEW IMPORTS (Postgres/ORM) ---
 from app.database import engine, SessionLocal
-from app.models import Product, Inventory, Order, Customer, Return, RestockNotification, OrderItem
+from app.models import Product, Inventory, Order, Customer, OrderItem, Return, RestockNotification
 
 
 # --- Helper for Safe Logging ---
 def log_warning(msg: str):
-    """Writes to stderr so it doesn't break the MCP protocol."""
     sys.stderr.write(f"[WARNING] {msg}\n")
     sys.stderr.flush()
 
@@ -29,13 +29,12 @@ def log_warning(msg: str):
 load_dotenv()
 
 google_api_key = os.getenv("GOOGLE_API_KEY")
-
 if not google_api_key:
     log_warning("GOOGLE_API_KEY not found in env.")
 
-# --- 2. Initialize LLM (Gemini Flash) ---
+# --- 2. Initialize LLM ---
 llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash-8b",
+    model="gemini-2.5-flash-8b",
     google_api_key=google_api_key,
     temperature=0
 )
@@ -43,187 +42,72 @@ llm = ChatGoogleGenerativeAI(
 # --- 3. Initialize MCP Server ---
 mcp = FastMCP("data_query")
 
-
-# --- 4. Tools ---
-
-@mcp.tool()
-def sql_db_query(query: str) -> str:
-    """Execute a SQL query on 'orders', 'customers', or 'returns'."""
-    try:
-        # LAZY INITIALIZATION: Only connect when the tool is CALLED
-        db = SQLDatabase(engine, include_tables=['orders', 'customers', 'returns'])
-
-        sql_toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-        # Find the specific tool from the toolkit
-        query_tool = next(t for t in sql_toolkit.get_tools() if t.name == 'sql_db_query')
-        return query_tool.invoke({"query": query})
-    except Exception as e:
-        return f"Error executing SQL query: {str(e)}"
+# 🚨 CONFIG: Cloudinary Path 🚨
+CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
 
 
-@mcp.tool()
-def sql_db_schema(table_names: Optional[str] = None) -> str:
-    """Get schema of 'orders', 'customers', or 'returns'."""
-    try:
-        # LAZY INITIALIZATION: Only connect when the tool is CALLED
-        db = SQLDatabase(engine, include_tables=['orders', 'customers', 'returns'])
+# --- 4. HUMAN-PROOFING HELPER FUNCTIONS ---
 
-        sql_toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-        schema_tool = next(t for t in sql_toolkit.get_tools() if t.name == 'sql_db_schema')
-        return schema_tool.invoke({"table_names": table_names or ""})
-    except Exception as e:
-        return f"Error getting schema: {str(e)}"
+def text_to_int(text_val: Union[str, int]) -> int:
+    """Converts 'one', 'two', '10' to integer 1, 2, 10."""
+    if isinstance(text_val, int):
+        return text_val
 
+    text_val = str(text_val).lower().strip()
+    if text_val.isdigit():
+        return int(text_val)
 
-@mcp.tool()
-async def initiate_return(order_id: str, product_ids: List[str]) -> str:
-    """Initiate a return record."""
-    session = SessionLocal()
-    try:
-        # Check if order exists first
-        order = session.query(Order).filter(Order.order_id == order_id).first()
-        if not order:
-            return f"Error: Order ID {order_id} not found."
-
-        return_id = f"RET-{uuid.uuid4().hex[:6].upper()}"
-
-        # Create new Return record
-        new_return = Return(
-            return_id=return_id,
-            order_id=order_id,
-            product_ids=json.dumps(product_ids),
-            status="Pending",
-            # return_date is set automatically by server_default
-        )
-
-        session.add(new_return)
-        session.commit()
-        return json.dumps({"status": "Return Initiated", "return_id": return_id})
-    except Exception as e:
-        session.rollback()
-        return f"Error initiating return: {str(e)}"
-    finally:
-        session.close()
+    mapping = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "a pair": 2, "a couple": 2, "single": 1
+    }
+    return mapping.get(text_val, 1)  # Default to 1 if unknown
 
 
-@mcp.tool()
-async def query_product_database(
-        product_name: Optional[str] = None,
-        category: Optional[str] = None,
-        colour: Optional[str] = None,
-        size: Optional[str] = None
-) -> str:
+def clean_phone(phone: str) -> str:
+    """Removes spaces, dashes, brackets from phone numbers."""
+    # Keep only digits and the plus sign
+    return re.sub(r'[^\d+]', '', str(phone))
+
+
+def smart_find_product(session, search_term: str) -> Optional[Product]:
     """
-    Search for products in the database.
-
-    CRITICAL INSTRUCTION FOR AGENT:
-    - Do NOT call this tool multiple times in parallel. Call it ONCE with the best specific details you have.
-    - You CAN combine filters (e.g., product_name="Verona" AND colour="Blue").
+    Tries to find a product using:
+    1. Exact match (case-insensitive)
+    2. Partial match (SQL ILIKE)
+    3. Fuzzy match (Spelling correction)
     """
-    # 🚨 CONFIG: Cloudinary Path 🚨
-    CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
+    # 1. Try SQL ILIKE (Partial match)
+    # This covers "Verona" -> "Verona Vine"
+    exact_or_partial = session.query(Product).filter(
+        Product.product_name.ilike(f"%{search_term}%")
+    ).first()
 
-    # Clean inputs
-    if product_name == "None": product_name = None
-    if category == "None": category = None
-    if colour == "None": colour = None
-    if size == "None": size = None
+    if exact_or_partial:
+        return exact_or_partial
 
-    session = SessionLocal()
-    try:
-        # Start building the query
-        # We join Product and Inventory to filter by size
-        query = session.query(Product, Inventory.size, Inventory.stock_quantity) \
-            .outerjoin(Inventory, Product.product_id == Inventory.product_id)
+    # 2. Fuzzy Match (Spelling errors)
+    # If "Verone" or "Cimson", SQL fails. We need Python to fix it.
+    all_products = session.query(Product.product_name).all()
+    all_names = [p[0] for p in all_products]
 
-        # Apply filters dynamically
-        if product_name:
-            query = query.filter(Product.product_name.ilike(f"%{product_name}%"))
-        if category:
-            query = query.filter(Product.category.ilike(f"%{category}%"))
-        if colour:
-            query = query.filter(Product.colour.ilike(f"%{colour}%"))
-        if size:
-            query = query.filter(Inventory.size.ilike(f"%{size}%"))
+    # Get closest match (0.6 cutoff means 60% similarity required)
+    matches = difflib.get_close_matches(search_term, all_names, n=1, cutoff=0.6)
 
-        # Limit results
-        results = query.limit(5).all()
+    if matches:
+        best_guess = matches[0]
+        print(f"   -> Fuzzy Match: corrected '{search_term}' to '{best_guess}'")
+        return session.query(Product).filter(Product.product_name == best_guess).first()
 
-        if not results:
-            return "No exact match found. Try searching with fewer details (e.g., just the name or just the category)."
-
-        formatted_results = []
-        for prod, inv_size, inv_qty in results:
-            # Handle stock status logic
-            if inv_qty is not None:
-                stock_status = f"Out of Stock (size {inv_size})" if inv_qty <= 0 else f"In Stock (size {inv_size}, {inv_qty} left)"
-            else:
-                stock_status = "Stock unknown"
-
-            # Image URL logic
-            image_tag = ""
-            if prod.image_url:
-                # Handle full URLs vs filenames
-                if prod.image_url.startswith("http"):
-                    full_url = prod.image_url
-                else:
-                    filename = prod.image_url.split("/")[-1]
-                    full_url = f"{CLOUDINARY_BASE_URL}{filename}"
-
-                image_tag = f'<img src="{full_url}" alt="{prod.product_name}" />'
-
-            formatted_results.append(
-                f"Product: {prod.product_name}\nPrice: {prod.price}\nColour: {prod.colour}\nSize: {inv_size}\nDescription: {prod.description}\nStatus: {stock_status}\n{image_tag}"
-            )
-
-        return "\n\n---PRODUCT---\n\n".join(formatted_results)
-
-    except Exception as e:
-        return f"Error querying product database: {str(e)}"
-    finally:
-        session.close()
+    return None
 
 
-@mcp.tool()
-async def add_restock_notification(product_name: str, customer_email: str, size: str,
-                                   colour: Optional[str] = None) -> str:
-    """Add a customer to the waitlist."""
-    session = SessionLocal()
-    try:
-        # Find product ID first
-        product = session.query(Product).filter(Product.product_name.ilike(f"%{product_name}%")).first()
-
-        if not product:
-            return f"Error: Product '{product_name}' not found."
-
-        new_notification = RestockNotification(
-            customer_email=customer_email,
-            product_id=product.product_id,
-            size=size,
-            status="Pending"
-        )
-
-        session.add(new_notification)
-        session.commit()
-        return json.dumps({"status": "Success", "message": f"Added {customer_email} to waitlist for {product_name}."})
-    except Exception as e:
-        session.rollback()
-        return f"Error adding notification: {str(e)}"
-    finally:
-        session.close()
-
-
-# --- NEW TOOLS FOR SALES & DISCOVERY ---
+# --- 5. TOOLS ---
 
 @mcp.tool()
 async def list_products(limit: int = 5) -> str:
-    """
-    Lists available products for users to browse.
-    Use this when the user asks "What do you sell?" or "Show me your products".
-    """
-    # 🚨 CONFIG: Cloudinary Path 🚨
-    CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
-
+    """Lists available products for users to browse."""
     session = SessionLocal()
     try:
         products = session.query(Product).limit(limit).all()
@@ -232,7 +116,6 @@ async def list_products(limit: int = 5) -> str:
 
         output = []
         for p in products:
-            # Format Image
             img_tag = ""
             if p.image_url:
                 raw_url = str(p.image_url)
@@ -254,47 +137,38 @@ async def list_products(limit: int = 5) -> str:
         session.close()
 
 
-# ... (keep other imports) ...
-
 @mcp.tool()
 async def create_draft_order(
         customer_email: str,
         customer_name: str,
         shipping_address: str,
         phone_number: str,
-        items: Union[str, List[Dict[str, Any]]]  # <--- Accept BOTH types
+        items: str
 ) -> str:
     """
-    Creates a new order in the database.
-    'items' can be a JSON string OR a list of objects.
-    Example: [{"product_name": "Verona", "size": "M", "quantity": 1}]
+    Creates a new order.
+    'items' must be a JSON string: '[{"product_name": "...", "size": "...", "quantity": 1}]'
     """
     session = SessionLocal()
     try:
-        # --- ROBUST INPUT HANDLING ---
-        # 1. Check what the AI sent us
+        # --- ROBUST PARSING ---
         item_list = []
-
         if isinstance(items, str):
-            # If it's a string, try to parse it as JSON
             try:
-                # Clean up potential markdown formatting like ```json ... ```
                 cleaned_items = items.strip()
                 if cleaned_items.startswith("```"):
-                    cleaned_items = cleaned_items.split("```")[1]
-                    if cleaned_items.startswith("json"):
-                        cleaned_items = cleaned_items[4:]
-
+                    lines = cleaned_items.splitlines()
+                    if lines[0].startswith("```"): lines = lines[1:]
+                    if lines[-1].startswith("```"): lines = lines[:-1]
+                    cleaned_items = "\n".join(lines)
                 item_list = json.loads(cleaned_items)
-            except json.JSONDecodeError:
-                return "Error: 'items' was a string but could not be parsed as valid JSON."
-
+            except:
+                return f"Error: Could not parse items JSON. Received: {items}"
         elif isinstance(items, list):
-            # If it's already a list, use it directly
             item_list = items
 
-        else:
-            return f"Error: 'items' received unexpected type: {type(items)}. Expected JSON string or List."
+        # --- PHONE CLEANING ---
+        clean_phone_number = clean_phone(phone_number)
 
         # 2. Find/Create Customer
         customer = session.query(Customer).filter(Customer.email == customer_email).first()
@@ -302,62 +176,60 @@ async def create_draft_order(
             customer = Customer(
                 email=customer_email,
                 full_name=customer_name,
-                phone_number=phone_number,
+                phone_number=clean_phone_number,
                 shipping_address=shipping_address
             )
             session.add(customer)
             session.flush()
         else:
-            # Update info
             customer.full_name = customer_name
             customer.shipping_address = shipping_address
-            customer.phone_number = phone_number
+            customer.phone_number = clean_phone_number
 
-        # 3. Process Items & Calc Total
+        # 3. Process Items
         total_amount = 0.0
         order_items_objects = []
 
-        if not item_list:
-            return "Error: No items provided in the order."
+        if not item_list: return "Error: No items found."
 
         for item in item_list:
-            # Flexible dictionary access
-            p_name = item.get("product_name") or item.get("product")
-            size = item.get("size")
+            p_name_input = item.get("product_name") or item.get("product")
+            size_input = item.get("size")
+            qty_input = item.get("quantity", 1)
 
-            # Handle quantity safely (convert string "1" to int 1)
-            try:
-                qty = int(item.get("quantity", 1))
-            except:
-                qty = 1
+            # A. SMART QUANTITY ("one" -> 1)
+            qty = text_to_int(qty_input)
 
-            if not p_name or not size:
-                return f"Error: Item is missing product_name or size. Data: {item}"
+            if not p_name_input or not size_input:
+                return f"Error: Missing product name or size in {item}"
 
-            # Find Product
-            product = session.query(Product).filter(Product.product_name.ilike(f"%{p_name}%")).first()
+            # B. SMART PRODUCT SEARCH (Fuzzy Match)
+            product = smart_find_product(session, p_name_input)
             if not product:
-                return f"Error: Product '{p_name}' not found."
+                return f"Error: We couldn't find a product matching '{p_name_input}'. Please check the name."
 
-            # Check Stock
+            # C. SMART SIZE SEARCH (Case Insensitive)
+            # We iterate through inventory to find the closest size match (e.g. 'm' -> 'M')
             inventory = session.query(Inventory).filter(
                 Inventory.product_id == product.product_id,
-                Inventory.size.ilike(size)
+                Inventory.size.ilike(size_input)  # ILIKE handles 'm' vs 'M'
             ).first()
 
-            if not inventory or inventory.stock_quantity < qty:
-                return f"Error: Insufficient stock for '{p_name}' (Size {size})."
+            if not inventory:
+                return f"Error: Size '{size_input}' is not available for {product.product_name}."
+
+            if inventory.stock_quantity < qty:
+                return f"Error: Only {inventory.stock_quantity} left of {product.product_name} (Size {size_input})."
 
             # Deduct Stock
             inventory.stock_quantity -= qty
 
-            # Add to total
             line_total = product.price * qty
             total_amount += line_total
 
             order_item = OrderItem(
                 product_name=product.product_name,
-                size=size,
+                size=inventory.size,  # Use the official DB size (e.g. "M") not user input ("m")
                 quantity=qty,
                 price_at_purchase=product.price
             )
@@ -390,20 +262,110 @@ async def create_draft_order(
     finally:
         session.close()
 
+
 @mcp.tool()
 async def generate_payment_link(order_id: str) -> str:
-    """
-    Generates a payment link for the given order ID.
-    """
-    # In a real app, this would call Stripe API.
-    # For now, we return a Mock Link that looks real.
-
-    mock_link = f"https://checkout.stripe.com/pay/{order_id}?currency=lkr"
-
+    """Generates a mock payment link."""
+    mock_link = f"[https://checkout.stripe.com/pay/](https://checkout.stripe.com/pay/){order_id}?currency=lkr"
     return json.dumps({
         "payment_url": mock_link,
         "note": "This is a simulation link. In production, connect Stripe here."
     })
+
+
+# --- KEEP EXISTING QUERY TOOLS ---
+# (Keeping these compact as they haven't changed)
+
+@mcp.tool()
+def sql_db_query(query: str) -> str:
+    try:
+        db = SQLDatabase(engine, include_tables=['orders', 'customers', 'returns'])
+        sql_toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+        query_tool = next(t for t in sql_toolkit.get_tools() if t.name == 'sql_db_query')
+        return query_tool.invoke({"query": query})
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def sql_db_schema(table_names: Optional[str] = None) -> str:
+    try:
+        db = SQLDatabase(engine, include_tables=['orders', 'customers', 'returns'])
+        sql_toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+        schema_tool = next(t for t in sql_toolkit.get_tools() if t.name == 'sql_db_schema')
+        return schema_tool.invoke({"table_names": table_names or ""})
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+async def query_product_database(product_name: str = None, category: str = None, colour: str = None,
+                                 size: str = None) -> str:
+    # 🚨 CONFIG: Cloudinary Path 🚨
+    CLOUDINARY_BASE_URL = "[https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/](https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/)"
+
+    # Clean inputs
+    if product_name == "None": product_name = None
+    if category == "None": category = None
+    if colour == "None": colour = None
+    if size == "None": size = None
+
+    session = SessionLocal()
+    try:
+        # Start building the query
+        query = session.query(Product, Inventory.size, Inventory.stock_quantity) \
+            .outerjoin(Inventory, Product.product_id == Inventory.product_id)
+
+        # Apply filters
+        if product_name:
+            query = query.filter(Product.product_name.ilike(f"%{product_name}%"))
+        if category:
+            query = query.filter(Product.category.ilike(f"%{category}%"))
+        if colour:
+            query = query.filter(Product.colour.ilike(f"%{colour}%"))
+        if size:
+            query = query.filter(Inventory.size.ilike(f"%{size}%"))
+
+        results = query.limit(5).all()
+
+        if not results:
+            return "No exact match found. Try searching with fewer details."
+
+        formatted_results = []
+        for prod, inv_size, inv_qty in results:
+            try:
+                # 1. Handle Stock Logic safely
+                if inv_qty is not None:
+                    stock_status = f"Out of Stock (size {inv_size})" if inv_qty <= 0 else f"In Stock (size {inv_size}, {inv_qty} left)"
+                else:
+                    stock_status = "Stock unknown"
+
+                # 2. Handle Image Logic
+                image_tag = ""
+                if prod.image_url:
+                    raw_url = str(prod.image_url)
+                    if "localhost" in raw_url:
+                        filename = raw_url.split("/")[-1]
+                        full_url = f"{CLOUDINARY_BASE_URL}{filename}"
+                    elif raw_url.startswith("http"):
+                        full_url = raw_url
+                    else:
+                        full_url = f"{CLOUDINARY_BASE_URL}{raw_url}"
+                    image_tag = f'<img src="{full_url}" alt="{prod.product_name}" style="max-width: 200px; border-radius: 8px;" />'
+
+                formatted_results.append(
+                    f"Product: {prod.product_name}\nPrice: {prod.price}\nColour: {prod.colour}\nSize: {inv_size}\nDescription: {prod.description}\nStatus: {stock_status}\n{image_tag}"
+                )
+            except Exception:
+                continue
+
+        return "\n\n---PRODUCT---\n\n".join(formatted_results)
+
+    except Exception as e:
+        return f"Error querying product database: {str(e)}"
+    finally:
+        session.close()
+
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
