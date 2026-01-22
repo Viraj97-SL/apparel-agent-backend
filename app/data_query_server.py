@@ -15,7 +15,7 @@ from mcp.server.fastmcp import FastMCP
 
 # --- NEW IMPORTS (Postgres/ORM) ---
 from app.database import engine, SessionLocal
-from app.models import Product, Inventory, Order, Customer, Return, RestockNotification
+from app.models import Product, Inventory, Order, Customer, Return, RestockNotification, OrderItem
 
 
 # --- Helper for Safe Logging ---
@@ -212,6 +212,167 @@ async def add_restock_notification(product_name: str, customer_email: str, size:
     finally:
         session.close()
 
+
+# --- NEW TOOLS FOR SALES & DISCOVERY ---
+
+@mcp.tool()
+async def list_products(limit: int = 5) -> str:
+    """
+    Lists available products for users to browse.
+    Use this when the user asks "What do you sell?" or "Show me your products".
+    """
+    # 🚨 CONFIG: Cloudinary Path 🚨
+    CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
+
+    session = SessionLocal()
+    try:
+        products = session.query(Product).limit(limit).all()
+        if not products:
+            return "We currently have no products listed."
+
+        output = []
+        for p in products:
+            # Format Image
+            img_tag = ""
+            if p.image_url:
+                raw_url = str(p.image_url)
+                if "localhost" in raw_url:
+                    filename = raw_url.split("/")[-1]
+                    full_url = f"{CLOUDINARY_BASE_URL}{filename}"
+                elif raw_url.startswith("http"):
+                    full_url = raw_url
+                else:
+                    full_url = f"{CLOUDINARY_BASE_URL}{raw_url}"
+                img_tag = f'<img src="{full_url}" alt="{p.product_name}" style="max-width: 150px; border-radius: 8px;" />'
+
+            output.append(f"• **{p.product_name}** - LKR {p.price}\n  {p.description}\n  {img_tag}")
+
+        return "\n\n".join(output) + "\n\n(Ask for more details on any item!)"
+    except Exception as e:
+        return f"Error listing products: {str(e)}"
+    finally:
+        session.close()
+
+
+@mcp.tool()
+async def create_draft_order(
+        customer_email: str,
+        customer_name: str,
+        shipping_address: str,
+        phone_number: str,
+        items: str
+) -> str:
+    """
+    Creates a new order in the database.
+    'items' must be a JSON string like: '[{"product_name": "Verona", "size": "M", "quantity": 1}]'
+    """
+    session = SessionLocal()
+    try:
+        # 1. Parse Items
+        try:
+            item_list = json.loads(items)
+        except:
+            return "Error: Items must be valid JSON."
+
+        # 2. Find/Create Customer
+        customer = session.query(Customer).filter(Customer.email == customer_email).first()
+        if not customer:
+            customer = Customer(
+                email=customer_email,
+                full_name=customer_name,
+                phone_number=phone_number,
+                shipping_address=shipping_address
+            )
+            session.add(customer)
+            session.flush()  # Get ID
+        else:
+            # Update info
+            customer.full_name = customer_name
+            customer.shipping_address = shipping_address
+            customer.phone_number = phone_number
+
+        # 3. Process Items & Calc Total
+        total_amount = 0.0
+        order_items_objects = []
+
+        for item in item_list:
+            p_name = item.get("product_name")
+            size = item.get("size")
+            qty = int(item.get("quantity", 1))
+
+            # Find Product
+            product = session.query(Product).filter(Product.product_name.ilike(f"%{p_name}%")).first()
+            if not product:
+                return f"Error: Product '{p_name}' not found."
+
+            # Check Stock
+            inventory = session.query(Inventory).filter(
+                Inventory.product_id == product.product_id,
+                Inventory.size.ilike(size)
+            ).first()
+
+            if not inventory or inventory.stock_quantity < qty:
+                return f"Error: Insufficient stock for '{p_name}' (Size {size})."
+
+            # Deduct Stock (Simple Reservation)
+            inventory.stock_quantity -= qty
+
+            # Add to total
+            line_total = product.price * qty
+            total_amount += line_total
+
+            # Create Order Item Object
+            order_item = OrderItem(
+                product_name=product.product_name,
+                size=size,
+                quantity=qty,
+                price_at_purchase=product.price
+            )
+            order_items_objects.append(order_item)
+
+        # 4. Create Order
+        new_order = Order(
+            customer_id=customer.customer_id,
+            status="pending_payment",
+            total_amount=total_amount
+        )
+        session.add(new_order)
+        session.flush()  # Get Order ID
+
+        # Link items to order
+        for obj in order_items_objects:
+            obj.order_id = new_order.order_id
+            session.add(obj)
+
+        session.commit()
+        return json.dumps({
+            "status": "success",
+            "order_id": new_order.order_id,
+            "total": total_amount,
+            "message": "Draft order created. Proceed to payment."
+        })
+
+    except Exception as e:
+        session.rollback()
+        return f"Error creating order: {str(e)}"
+    finally:
+        session.close()
+
+
+@mcp.tool()
+async def generate_payment_link(order_id: str) -> str:
+    """
+    Generates a payment link for the given order ID.
+    """
+    # In a real app, this would call Stripe API.
+    # For now, we return a Mock Link that looks real.
+
+    mock_link = f"https://checkout.stripe.com/pay/{order_id}?currency=lkr"
+
+    return json.dumps({
+        "payment_url": mock_link,
+        "note": "This is a simulation link. In production, connect Stripe here."
+    })
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
