@@ -4,139 +4,141 @@
 import { useState, useRef, useEffect } from 'react';
 import styles from './Chat.module.css';
 
+// --- DATA CONFIGURATION ---
+const CLOUDINARY_BASE = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/";
+const featuredProducts = [
+    { name: "Wild Bloom Whisper", price: "1790", img: "PWBW01.jpg" },
+    { name: "Pink Rhapsody", price: "2850", img: "PPR02.jpg" },
+    { name: "Blue Floral Bloom", price: "2390", img: "PFB019.jpg" },
+    { name: "Verona Vine", price: "2450", img: "PVV020.jpg" },
+    { name: "Crimson Canvas", price: "2400", img: "PCC010.jpg" },
+    { name: "Chic Rhythms", price: "1990", img: "PCR04.jpg" }
+];
+const trends = [
+    { title: "Trending", body: "Floral prints are up 20% this week!" },
+    { title: "Restock Alert", body: "The Verona Vine is back in Medium." },
+    { title: "Style Tip", body: "Pair Crimson Skirts with white heels." },
+    { title: "New Arrival", body: "Summer Collection is now live." }
+];
+
 export default function Chat() {
   const [query, setQuery] = useState('');
   const [chatHistory, setChatHistory] = useState([]);
   const [threadId, setThreadId] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
-
-  // NEW: State for Mode and File
-  const [mode, setMode] = useState('standard'); // 'standard' or 'vto'
+  const [mode, setMode] = useState('standard');
   const [selectedFile, setSelectedFile] = useState(null);
+  const [toasts, setToasts] = useState([]);
+
   const fileInputRef = useRef(null);
-
-  // Auto-scroll logic
   const messagesEndRef = useRef(null);
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-  useEffect(() => { scrollToBottom(); }, [chatHistory]);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    // Allow empty text IF there is a file (e.g., uploading the photo)
-    if (!query.trim() && !selectedFile) return;
+  // Auto-scroll
+  useEffect(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatHistory]);
 
-    // Optimistically show user message
-    let displayContent = query;
-    if (selectedFile) {
-        displayContent += ` [Attached: ${selectedFile.name}]`;
-    }
+  // --- TOAST LOGIC ---
+  useEffect(() => {
+    const interval = setInterval(() => {
+        const randomTrend = trends[Math.floor(Math.random() * trends.length)];
+        const id = Date.now();
+        setToasts(prev => [...prev, { ...randomTrend, id }]);
+
+        // Remove after 5 seconds
+        setTimeout(() => {
+            setToasts(prev => prev.filter(t => t.id !== id));
+        }, 5000);
+    }, 45000); // Every 45 seconds
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // --- SEND MESSAGE ---
+  const handleSubmit = async (e, overrideText = null) => {
+    if (e) e.preventDefault();
+    const textToSend = overrideText || query;
+
+    if (!textToSend.trim() && !selectedFile) return;
+
+    let displayContent = textToSend;
+    if (selectedFile) displayContent += ` [Attached: ${selectedFile.name}]`;
+
     const userMessage = { role: 'human', content: displayContent };
-
     setChatHistory((prev) => [...prev, userMessage]);
     setQuery('');
 
-    // Create the "FormData" packet to send text + file
-    const formData = new FormData();
-    formData.append('query', query || " "); // Backend needs some text
-    formData.append('mode', mode);          // Send the current mode
-    if (threadId) formData.append('thread_id', threadId);
-    if (selectedFile) formData.append('file', selectedFile);
-
-    // Clear file after sending
     const currentFile = selectedFile;
     setSelectedFile(null);
     setIsLoading(true);
 
-    try {
-      // ---------------------------------------------------------
-      // 👇 THE FIX IS HERE: Use the Environment Variable
-      // ---------------------------------------------------------
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
-      
-      const response = await fetch(`${API_URL}/chat`, {
-        method: 'POST',
-        // Note: Do NOT set Content-Type header when using FormData;
-        // the browser sets it automatically with the boundary.
-        body: formData,
-      });
+    const formData = new FormData();
+    formData.append('query', textToSend || " ");
+    formData.append('mode', mode);
+    if (threadId) formData.append('thread_id', threadId);
+    if (currentFile) formData.append('file', currentFile);
 
+    try {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
+      const response = await fetch(`${API_URL}/chat`, { method: 'POST', body: formData });
       const data = await response.json();
-      const aiMessage = { role: 'ai', content: data.response };
-      setChatHistory((prev) => [...prev, aiMessage]);
-      setThreadId(data.thread_id);
+
+      const reply = data.response || data.content || "I apologize, I couldn't connect.";
+      setChatHistory((prev) => [...prev, { role: 'ai', content: reply }]);
+      if (data.thread_id) setThreadId(data.thread_id);
 
     } catch (error) {
       console.error(error);
-      // If error, put the file back so they can try again?
-      // For now, just show error.
-      setChatHistory((prev) => [...prev, { role: 'ai', content: "Sorry, I encountered an error connecting to the server." }]);
+      setChatHistory((prev) => [...prev, { role: 'ai', content: "Connection error. Please try again." }]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Helper: Detect and render images in bot response
+  // Helper: Render Images
   const renderContent = (content) => {
     const imgRegex = /<img src="(.*?)" alt="(.*?)" \/>/g;
     const parts = [];
     let lastIndex = 0;
     let match;
-
     while ((match = imgRegex.exec(content)) !== null) {
-      if (match.index > lastIndex) {
-        parts.push(<span key={lastIndex}>{content.substring(lastIndex, match.index)}</span>);
-      }
-      parts.push(
-        <img key={match.index} src={match[1]} alt={match[2]} className={styles.productImage} />
-      );
+      if (match.index > lastIndex) parts.push(content.substring(lastIndex, match.index));
+      parts.push(<img key={match.index} src={match[1]} alt={match[2]} className={styles.productImage} />);
       lastIndex = imgRegex.lastIndex;
     }
-    if (lastIndex < content.length) {
-      parts.push(<span key={lastIndex}>{content.substring(lastIndex)}</span>);
-    }
+    if (lastIndex < content.length) parts.push(content.substring(lastIndex));
     return parts.length > 0 ? parts : content;
   };
 
   return (
     <div className={styles.container}>
-      {/* SIDEBAR */}
-      <aside className={styles.sidebar}>
-        <button className={styles.newChatButton} onClick={() => window.location.reload()}>
-          + New Chat
-        </button>
 
-        {/* MODE SELECTOR */}
-        <div className={styles.modeContainer}>
-            <label className={styles.modeLabel}>Chat Mode</label>
-            <select
-                className={styles.modeSelect}
-                value={mode}
-                onChange={(e) => setMode(e.target.value)}
-            >
-                <option value="standard">Standard Support</option>
-                <option value="vto">Virtual Try-On (Beta)</option>
-            </select>
-        </div>
-      </aside>
+      {/* 1. HEADER */}
+      <header className={styles.header}>
+          <div className={styles.brandContainer}>
+              <div className={styles.aiRing} style={{ animationDuration: isLoading ? '0.5s' : '3s' }}></div>
+              <div className={styles.brandName}>Ask Pamorya</div>
+          </div>
+          <select className={styles.modeSelect} value={mode} onChange={(e) => setMode(e.target.value)}>
+              <option value="standard">Stylist Mode</option>
+              <option value="vto">Virtual Try-On</option>
+          </select>
+      </header>
 
-      {/* MAIN AREA */}
+      {/* 2. CHAT AREA */}
       <section className={styles.chatArea}>
         <div className={styles.messageList}>
           {chatHistory.length === 0 && (
             <div className={styles.emptyState}>
-              <h1>{mode === 'vto' ? 'Virtual Try-On' : 'Apparel AI'}</h1>
-              <p>{mode === 'vto'
-                  ? 'Upload a photo and pick a product to see how it fits!'
-                  : 'Your personal fashion concierge.'}
-              </p>
+              <h1>Pamorya Stylist</h1>
+              <p>Welcome. I am at your service.<br/>Ask about trends, sizes, or your orders.</p>
             </div>
           )}
 
           {chatHistory.map((msg, idx) => (
             <div key={idx} className={`${styles.messageRow} ${msg.role === 'human' ? styles.userRow : styles.aiRow}`}>
               <div className={`${styles.bubble} ${msg.role === 'human' ? styles.userBubble : styles.aiBubble}`}>
+                {msg.role === 'ai' && <span className={styles.aiName}>Pamorya Stylist</span>}
                 {renderContent(msg.content)}
               </div>
             </div>
@@ -144,56 +146,73 @@ export default function Chat() {
 
           {isLoading && (
              <div className={`${styles.messageRow} ${styles.aiRow}`}>
-               <div className={styles.aiBubble}>Thinking...</div>
+               <div className={styles.aiBubble}>
+                   <span className={styles.aiName}>Pamorya Stylist</span>
+                   <em>Thinking...</em>
+               </div>
              </div>
           )}
           <div ref={messagesEndRef} />
         </div>
 
-        {/* INPUT AREA */}
+        {/* INPUT */}
         <div className={styles.inputContainer}>
           {selectedFile && (
             <div className={styles.filePreview}>
-                <span>📎 {selectedFile.name}</span>
-                <span className={styles.removeFile} onClick={() => setSelectedFile(null)}>×</span>
+                📎 {selectedFile.name} <span style={{cursor:'pointer', marginLeft:5}} onClick={() => setSelectedFile(null)}>×</span>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className={styles.inputForm}>
-            {/* HIDDEN FILE INPUT */}
+          <form onSubmit={(e) => handleSubmit(e)} className={styles.inputForm}>
             <input
                 type="file"
                 ref={fileInputRef}
                 hidden
                 accept="image/*"
-                onChange={(e) => {
-                    if(e.target.files?.[0]) setSelectedFile(e.target.files[0]);
-                }}
+                onChange={(e) => e.target.files?.[0] && setSelectedFile(e.target.files[0])}
             />
-
-            {/* PAPERCLIP BUTTON */}
             <button type="button" className={styles.attachButton} onClick={() => fileInputRef.current?.click()}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={styles.icon}>
-                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                </svg>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
             </button>
 
             <input
               type="text"
               className={styles.textInput}
-              placeholder={mode === 'vto' ? "Upload photo or type product name..." : "Ask about products..."}
+              placeholder={mode === 'vto' ? "Upload photo..." : "Type here..."}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
 
             <button type="submit" className={styles.sendButton} disabled={isLoading || (!query && !selectedFile)}>
-              <svg viewBox="0 0 24 24" fill="currentColor" className={styles.icon}>
-                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-              </svg>
+              SEND
             </button>
           </form>
         </div>
       </section>
+
+      {/* 3. INFINITE TICKER */}
+      <div className={styles.tickerWrap}>
+          <div className={styles.ticker}>
+              {/* Duplicate list for infinite loop */}
+              {[...featuredProducts, ...featuredProducts].map((prod, i) => (
+                  <div key={i} className={styles.tickerItem} onClick={() => handleSubmit(null, `Tell me about ${prod.name}`)}>
+                      <img src={`${CLOUDINARY_BASE}${prod.img}`} alt={prod.name} />
+                      <span>{prod.name} - LKR {prod.price}</span>
+                  </div>
+              ))}
+          </div>
+      </div>
+
+      {/* 4. TOASTS */}
+      <div className={styles.toastContainer}>
+          {toasts.map(t => (
+              <div key={t.id} className={styles.toast}>
+                  <h4>{t.title}</h4>
+                  <p>{t.body}</p>
+              </div>
+          ))}
+      </div>
+
     </div>
   );
 }
