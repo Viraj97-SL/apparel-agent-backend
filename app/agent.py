@@ -311,18 +311,22 @@ supervisor_prompt = ChatPromptTemplate.from_messages(
 
         **AGENTS:**
         1. 'rag_agent': The *Policy Agent*. Use for questions about store policies (shipping, returns, T&Cs), and generic greetings/thanks.
-        2. 'data_query_agent': The *Database Agent*. Use for questions about products (price, size, stock) AND browsing ("what do you sell?").
+        2. 'data_query_agent': The *Database Agent*. Use for questions about products (price, size, stock), browsing ("what do you sell?"), and checking specific item details.
         3. 'sales_agent': The *Sales Agent*. Use ONLY for Buying, Checkout, and Ordering intents (e.g., "I want to buy", "Purchase this", giving shipping info).
-        4. 'web_search_agent': The *Public Web Searcher*. Use as a 'catch-all' for fashion trends, company news, etc.
+        4. 'web_search_agent': The *Public Web Searcher*. Use ONLY for general fashion trends or external news. **NEVER** use this for specific product questions.
 
         **CRITICAL ROUTING RULES:**
-        1. **CHECK THE LAST MESSAGE:** - If the *last message* is from an **AI Agent** (not the User) and it answers the question or provides the requested info, you MUST route to **'__end__'**.
+        1. **PRODUCT NAMES = DATABASE:** If the user asks about specific items (e.g., "Pink Rhapsody", "Verona Vine", "Crimson Canvas", "Wild Bloom", "Chic Rhythms"), you **MUST** route to 'data_query_agent'. Do NOT use 'web_search_agent'.
+
+        2. **SHOPPING INTENT:** If the user asks "Tell me about [Name]", "Do you have [Name]", or clicks a product tile, assume they are shopping -> 'data_query_agent'.
+
+        3. **CHECK THE LAST MESSAGE:** - If the *last message* is from an **AI Agent** (not the User) and it answers the question or provides the requested info, you MUST route to **'__end__'**.
            - If the *last message* is from the **User**, route it to the correct specialist.
 
-        2. **CHECK FOR FOLLOW-UPS:** - If the AI asked for clarification on a product -> 'data_query_agent'.
+        4. **CHECK FOR FOLLOW-UPS:** - If the AI asked for clarification on a product -> 'data_query_agent'.
            - If the AI asked for shipping/payment info -> 'sales_agent'.
 
-        3. **GREETINGS/CLOSINGS:**
+        5. **GREETINGS/CLOSINGS:**
            - "Hi", "Hello", "Thanks" -> 'rag_agent'.
            - "Bye", "Exit" -> '__end__'.
 
