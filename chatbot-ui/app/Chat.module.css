@@ -317,66 +317,68 @@
 /* 📱 MOBILE RESPONSIVENESS (The Magic Part)   */
 /* ------------------------------------------- */
 
+/* 📱 MOBILE RESPONSIVENESS FIX */
 @media (max-width: 768px) {
     /* Header: Stack or shrink */
     .header {
-        padding: 12px 15px;
+        padding: 10px 15px;
+        height: 60px; /* Fixed height for calculation */
     }
-    .brandName {
-        font-size: 18px; /* Smaller Logo */
-    }
-    .modeSelect {
-        padding: 6px 10px;
-        font-size: 11px;
-    }
+    .brandName { font-size: 16px; }
+    .modeSelect { padding: 6px 10px; font-size: 11px; }
 
-    /* Chat Area: Full width */
+    /* Chat Area: Lift it up so Ticker doesn't cover input */
     .chatArea {
         width: 100%;
-        margin: 0; /* Remove side margins */
-        border-radius: 0; /* Square corners */
-        border-left: none;
-        border-right: none;
-        height: calc(100vh - 130px); /* Adjust for header/footer */
+        border-radius: 0;
+        border: none;
+
+        /* CRITICAL FIX: */
+        /* Use 'dvh' (dynamic viewport height) to handle mobile URL bars */
+        /* Minus 60px (Header) and 70px (Ticker space) */
+        height: calc(100dvh - 130px);
+
+        /* Add margin at bottom so it floats ABOVE the ticker */
+        margin: 0 0 70px 0;
     }
 
-    .messageList {
-        padding: 15px;
-    }
+    .messageList { padding: 15px; }
+    .bubble { max-width: 88%; font-size: 14px; }
 
-    .bubble {
-        max-width: 90%;
-        font-size: 14px;
-    }
+    /* Input: Make it easier to tap */
+    .inputContainer { padding: 10px; }
 
-    /* Input: Simpler */
-    .inputContainer {
-        padding: 10px;
-    }
     .inputForm {
-        padding: 6px 10px;
+        padding: 8px 12px;
+        background: rgba(255, 255, 255, 0.08); /* Brighter bg for contrast */
     }
 
-    /* Ticker: Smaller images, maybe hide text if too cramped */
+    .textInput { font-size: 16px; } /* Prevents iOS zoom on focus */
+
+    /* SEND BUTTON: Bigger & High Contrast */
+    .sendButton {
+        width: 42px;  /* Bigger touch target */
+        height: 42px;
+        background: var(--gold-primary); /* Solid Gold background */
+        color: #000; /* Black icon */
+        border-radius: 50%;
+        box-shadow: 0 0 10px rgba(0,0,0,0.5);
+    }
+
+    /* Ticker: Fixed at bottom */
     .tickerWrap {
         height: 60px;
+        bottom: 0; /* Ensure it sticks to bottom */
+        z-index: 50; /* Ensure it stays on top */
     }
-    .tickerItem img {
-        width: 35px;
-        height: 35px;
-    }
-    .tickerItem span {
-        font-size: 11px;
-    }
+    .tickerItem img { width: 35px; height: 35px; }
+    .tickerItem span { font-size: 10px; }
 
-    /* Toasts: Move to top center so they don't block controls */
+    /* Toasts: Move out of the way */
     .toastContainer {
-        top: 10px;
-        right: 10px;
+        top: 70px;
         left: 10px;
+        right: 10px;
         width: auto;
-    }
-    .toast {
-        width: 100%;
     }
 }
