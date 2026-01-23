@@ -7,7 +7,7 @@ import styles from './Chat.module.css';
 // --- DATA CONFIGURATION ---
 const CLOUDINARY_BASE = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/";
 const featuredProducts = [
-    { name: "Wild Bloom Whisper", price: "1790", img: "PWBW01.jpg" },
+    { name: "Wild Bloom Whisper", price: "1790", img: "PWBW01_v1lxc3.jpg" },
     { name: "Pink Rhapsody", price: "2850", img: "PPR02.jpg" },
     { name: "Blue Floral Bloom", price: "2390", img: "PFB019.jpg" },
     { name: "Verona Vine", price: "2450", img: "PVV020.jpg" },
