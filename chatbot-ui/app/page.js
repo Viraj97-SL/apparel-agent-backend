@@ -6,7 +6,7 @@ import styles from './Chat.module.css';
 // --- DATA CONFIGURATION ---
 const CLOUDINARY_BASE = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/";
 
-// ✅ FEATURED PRODUCTS (Updated)
+// ✅ FEATURED PRODUCTS
 const featuredProducts = [
     {
         name: "Wild Bloom Whisper",
@@ -50,7 +50,7 @@ const featuredProducts = [
     }
 ];
 
-// ✅ NEWS & TRENDS (Expanded)
+// ✅ NEWS & TRENDS
 const trends = [
     { title: "Trending", body: "Floral prints are up 20% this week!" },
     { title: "Restock Alert", body: "The Verona Vine is back in Medium." },
@@ -62,7 +62,8 @@ const trends = [
 
 // --- PRODUCT GALLERY COMPONENT ---
 const ProductGallery = ({ imagesStr, alt }) => {
-    const images = imagesStr ? imagesStr.split(',').map(url => url.trim()).filter(url => url.length > 0) : [];
+    // Robust splitter: handles comma, space+comma, or just space if mixed
+    const images = imagesStr ? imagesStr.split(/,\s*/).map(url => url.trim()).filter(url => url.startsWith('http')) : [];
     const [currentIndex, setCurrentIndex] = useState(0);
 
     if (!images || images.length === 0) return null;
@@ -187,57 +188,49 @@ export default function Chat() {
   };
 
   const renderContent = (content) => {
-    // ⚠️ CRITICAL FIX: Improved Regex
-    // This regex looks for an <img tag, captures the src attribute,
-    // captures the alt attribute, and ignores everything else (like style="...").
-    // It handles attributes in different orders too.
-    const imgRegex = /<img\s+(?=[^>]*src="([^"]*)")(?=[^>]*alt="([^"]*)")[^>]*>/g;
+    // ⚠️ ATOMIC FIX:
+    // Instead of regex matching specific attributes (which fails with extra styles),
+    // we find the entire <img ... /> block, strip it, and parse the raw `src` string from it.
 
-    // Fallback regex for simpler tags or if the above is too strict on order
-    // This one just grabs src and alt wherever they are
-    // const imgRegexSimple = /<img[^>]+src="([^">]+)"[^>]+alt="([^">]+)"[^>]*>/g;
+    // 1. Split content by Image Tags
+    // This regex grabs everything from <img up to />
+    const tagRegex = /<img\s+[^>]*>/g;
 
     const parts = [];
     let lastIndex = 0;
     let match;
 
-    // We'll use a simpler, more robust regex loop manually if needed,
-    // but let's try a standard loose match first.
-    // Matches: <img ... src="..." ... alt="..." ... > OR <img ... alt="..." ... src="..." ... >
-    // Since JS regex lookaheads can be tricky in loops, let's use a two-step approach.
-
-    // Strategy: Split by <img ... /> tags, then parse the attributes from the tag string.
-
-    const tagRegex = /<img\s+[^>]*>/g;
-
     while ((match = tagRegex.exec(content)) !== null) {
-        // Push text preceding the tag
+        // Push text before the image
         if (match.index > lastIndex) {
             parts.push(content.substring(lastIndex, match.index));
         }
 
         const tagString = match[0];
 
-        // Extract src
-        const srcMatch = /src="([^"]*)"/.exec(tagString);
+        // 2. Extract src (the URL string)
+        // We look for src="..." or src='...'
+        const srcMatch = /src=["']([^"']*)["']/.exec(tagString);
         const src = srcMatch ? srcMatch[1] : "";
 
-        // Extract alt
-        const altMatch = /alt="([^"]*)"/.exec(tagString);
+        // 3. Extract alt
+        const altMatch = /alt=["']([^"']*)["']/.exec(tagString);
         const alt = altMatch ? altMatch[1] : "Product Image";
 
         if (src) {
+             // Render our Gallery Component with the clean URL string
              parts.push(
                 <ProductGallery key={match.index} imagesStr={src} alt={alt} />
             );
         } else {
-            // If for some reason src is missing, just render the tag string (unlikely)
-             parts.push(tagString);
+            // Failed to find src, push empty string (hide broken tag)
+             parts.push("");
         }
 
         lastIndex = tagRegex.lastIndex;
     }
 
+    // Push remaining text
     if (lastIndex < content.length) {
         parts.push(content.substring(lastIndex));
     }
