@@ -5,32 +5,66 @@ import styles from './Chat.module.css';
 
 // --- DATA CONFIGURATION ---
 const CLOUDINARY_BASE = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/";
+
+// ✅ UPDATED: Diverse list from your Excel file with FULL URLs
 const featuredProducts = [
-    { name: "Wild Bloom Whisper", price: "1790", img: "PWBW01_v1lxc3.jpg" },
-    { name: "Pink Rhapsody", price: "2850", img: "PPR02.jpg" },
-    { name: "Blue Floral Bloom", price: "2390", img: "PFB019.jpg" },
-    { name: "Verona Vine", price: "2450", img: "PVV020.jpg" },
-    { name: "Crimson Canvas", price: "2400", img: "PCC010.jpg" },
-    { name: "Chic Rhythms", price: "1990", img: "PCR04.jpg" }
+    {
+        name: "Wild Bloom Whisper",
+        price: "1790",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769167858/PWBW01_v1lxc3.jpg"
+    },
+    {
+        name: "Pink Rhapsody",
+        price: "2850",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694925/apparel_bot_products/PPR02.jpg"
+    },
+    {
+        name: "The Every-Wear Edge",
+        price: "2800",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694927/apparel_bot_products/PEWE06.jpg"
+    },
+    {
+        name: "Chic Rhythms",
+        price: "1990",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694926/apparel_bot_products/PCR04.jpg"
+    },
+    {
+        name: "Polka Dot Charm",
+        price: "2000",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694927/apparel_bot_products/PPDC07.jpg"
+    },
+    {
+        name: "Summer Picnic Gingham",
+        price: "1995",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694928/apparel_bot_products/PSPG08.jpg"
+    },
+    {
+        name: "Crimson & Cloud Skirt",
+        price: "1900",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694935/apparel_bot_products/PCCS05.jpg"
+    },
+    {
+        name: "Verona Vine",
+        price: "2450",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769509075/PVV020_01_aoxoqs.jpg"
+    }
 ];
+
+// ✅ UPDATED: News specific to your items
 const trends = [
-    { title: "Trending", body: "Floral prints are up 20% this week!" },
-    { title: "Restock Alert", body: "The Verona Vine is back in Medium." },
-    { title: "Style Tip", body: "Pair Crimson Skirts with white heels." },
-    { title: "New Arrival", body: "Summer Collection is now live." }
+    { title: "Trending", body: "Polka Dot prints are up 30% this week!" },
+    { title: "Restock Alert", body: "The Every-Wear Edge is back in stock." },
+    { title: "Style Tip", body: "Pair Crimson Skirts with white sneakers." },
+    { title: "New Arrival", body: "Summer Picnic collection is now live." }
 ];
 
 // --- NEW COMPONENT: PRODUCT GALLERY ---
-// Handles displaying single images or a swipeable gallery for multiple images
 const ProductGallery = ({ imagesStr, alt }) => {
-    // Split comma-separated links and clean whitespace
     const images = imagesStr ? imagesStr.split(',').map(url => url.trim()).filter(url => url.length > 0) : [];
     const [currentIndex, setCurrentIndex] = useState(0);
 
-    // Safety check
     if (!images || images.length === 0) return null;
 
-    // If it's just one image, show it normally (no dots/slider needed)
     if (images.length === 1) {
         return <img src={images[0]} alt={alt} className={styles.productImage} />;
     }
@@ -48,8 +82,6 @@ const ProductGallery = ({ imagesStr, alt }) => {
                 className={styles.galleryImage}
                 onClick={nextImage}
             />
-
-            {/* Navigation Dots */}
             <div className={styles.dotsContainer}>
                 {images.map((_, idx) => (
                     <div
@@ -59,18 +91,10 @@ const ProductGallery = ({ imagesStr, alt }) => {
                     />
                 ))}
             </div>
-
-            {/* Optional: Counter (e.g., 1/4) */}
             <div style={{
-                position: 'absolute',
-                top: '10px',
-                right: '10px',
-                background: 'rgba(0,0,0,0.6)',
-                color: 'white',
-                padding: '2px 6px',
-                borderRadius: '4px',
-                fontSize: '10px',
-                pointerEvents: 'none'
+                position: 'absolute', top: '10px', right: '10px',
+                background: 'rgba(0,0,0,0.6)', color: 'white',
+                padding: '2px 6px', borderRadius: '4px', fontSize: '10px', pointerEvents: 'none'
             }}>
                 {currentIndex + 1}/{images.length}
             </div>
@@ -90,28 +114,22 @@ export default function Chat() {
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
 
-  // Auto-scroll
   useEffect(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
 
-  // --- TOAST LOGIC ---
   useEffect(() => {
     const interval = setInterval(() => {
         const randomTrend = trends[Math.floor(Math.random() * trends.length)];
         const id = Date.now();
         setToasts(prev => [...prev, { ...randomTrend, id }]);
-
-        // Remove after 5 seconds
         setTimeout(() => {
             setToasts(prev => prev.filter(t => t.id !== id));
         }, 5000);
-    }, 45000); // Every 45 seconds
-
+    }, 45000);
     return () => clearInterval(interval);
   }, []);
 
-  // --- SEND MESSAGE ---
   const handleSubmit = async (e, overrideText = null) => {
     if (e) e.preventDefault();
     const textToSend = overrideText || query;
@@ -140,20 +158,16 @@ export default function Chat() {
       const response = await fetch(`${API_URL}/chat`, { method: 'POST', body: formData });
       const data = await response.json();
 
-      // --- LOGIC: HANDLE COD & STANDARD RESPONSES ---
       let reply = data.response || data.content;
 
-      // If the backend returned a JSON string for COD, parse it to show the clean message
       try {
         if (typeof reply === 'string' && reply.includes("COD_SUCCESS")) {
             const parsed = JSON.parse(reply);
             if (parsed.payment_url === "COD_SUCCESS") {
-                reply = parsed.message; // Show the nice receipt text
+                reply = parsed.message;
             }
         }
-      } catch (parseError) {
-        // Not JSON, just normal text. Keep 'reply' as is.
-      }
+      } catch (parseError) {}
 
       reply = reply || "I apologize, I couldn't connect.";
 
@@ -168,42 +182,29 @@ export default function Chat() {
     }
   };
 
-  // --- HELPER: RENDER CONTENT WITH GALLERY ---
   const renderContent = (content) => {
-    // Regex finds <img src="..." alt="..." />
     const imgRegex = /<img src="(.*?)" alt="(.*?)" \/>/g;
     const parts = [];
     let lastIndex = 0;
     let match;
 
     while ((match = imgRegex.exec(content)) !== null) {
-      // 1. Push text before the image
       if (match.index > lastIndex) {
         parts.push(content.substring(lastIndex, match.index));
       }
-
-      // 2. Push the ProductGallery component instead of a plain <img>
-      // match[1] is the src string (which might contain commas)
-      // match[2] is the alt text
       parts.push(
           <ProductGallery key={match.index} imagesStr={match[1]} alt={match[2]} />
       );
-
       lastIndex = imgRegex.lastIndex;
     }
-
-    // 3. Push any remaining text after the last image
     if (lastIndex < content.length) {
         parts.push(content.substring(lastIndex));
     }
-
     return parts.length > 0 ? parts : content;
   };
 
   return (
     <div className={styles.container}>
-
-      {/* 1. HEADER */}
       <header className={styles.header}>
           <div className={styles.brandContainer}>
               <div className={styles.aiRing} style={{ animationDuration: isLoading ? '0.5s' : '3s' }}></div>
@@ -215,7 +216,6 @@ export default function Chat() {
           </select>
       </header>
 
-      {/* 2. CHAT AREA */}
       <section className={styles.chatArea}>
         <div className={styles.messageList}>
           {chatHistory.length === 0 && (
@@ -245,7 +245,6 @@ export default function Chat() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* INPUT */}
         <div className={styles.inputContainer}>
           {selectedFile && (
             <div className={styles.filePreview}>
@@ -283,20 +282,22 @@ export default function Chat() {
         </div>
       </section>
 
-      {/* 3. INFINITE TICKER */}
+      {/* TICKER AREA - UPDATED TO HANDLE FULL URLS */}
       <div className={styles.tickerWrap}>
           <div className={styles.ticker}>
-              {/* Duplicate list for infinite loop */}
               {[...featuredProducts, ...featuredProducts].map((prod, i) => (
                   <div key={i} className={styles.tickerItem} onClick={() => handleSubmit(null, `Tell me about ${prod.name}`)}>
-                      <img src={`${CLOUDINARY_BASE}${prod.img}`} alt={prod.name} />
+                      {/* Check if image is a Full URL or needs the Base Path */}
+                      <img
+                          src={prod.img.startsWith('http') ? prod.img : `${CLOUDINARY_BASE}${prod.img}`}
+                          alt={prod.name}
+                      />
                       <span>{prod.name} - LKR {prod.price}</span>
                   </div>
               ))}
           </div>
       </div>
 
-      {/* 4. TOASTS */}
       <div className={styles.toastContainer}>
           {toasts.map(t => (
               <div key={t.id} className={styles.toast}>
@@ -305,7 +306,6 @@ export default function Chat() {
               </div>
           ))}
       </div>
-
     </div>
   );
 }
