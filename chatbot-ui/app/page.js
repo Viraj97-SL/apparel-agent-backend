@@ -6,7 +6,7 @@ import styles from './Chat.module.css';
 // --- DATA CONFIGURATION ---
 const CLOUDINARY_BASE = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/";
 
-// ✅ UPDATED: Diverse list from your Excel file with FULL URLs
+// ✅ FEATURED PRODUCTS (Updated)
 const featuredProducts = [
     {
         name: "Wild Bloom Whisper",
@@ -19,6 +19,21 @@ const featuredProducts = [
         img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694925/apparel_bot_products/PPR02.jpg"
     },
     {
+        name: "Blue Floral Bloom",
+        price: "2390",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694935/apparel_bot_products/PFB019.jpg"
+    },
+    {
+        name: "Verona Vine",
+        price: "2450",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769509075/PVV020_01_aoxoqs.jpg"
+    },
+    {
+        name: "Crimson Canvas",
+        price: "2400",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694935/apparel_bot_products/PCC010.jpg"
+    },
+    {
         name: "The Every-Wear Edge",
         price: "2800",
         img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694927/apparel_bot_products/PEWE06.jpg"
@@ -29,36 +44,23 @@ const featuredProducts = [
         img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694926/apparel_bot_products/PCR04.jpg"
     },
     {
-        name: "Polka Dot Charm",
-        price: "2000",
-        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694927/apparel_bot_products/PPDC07.jpg"
-    },
-    {
         name: "Summer Picnic Gingham",
         price: "1995",
         img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694928/apparel_bot_products/PSPG08.jpg"
-    },
-    {
-        name: "Crimson & Cloud Skirt",
-        price: "1900",
-        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694935/apparel_bot_products/PCCS05.jpg"
-    },
-    {
-        name: "Verona Vine",
-        price: "2450",
-        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769509075/PVV020_01_aoxoqs.jpg"
     }
 ];
 
-// ✅ UPDATED: News specific to your items
+// ✅ NEWS & TRENDS (Expanded)
 const trends = [
-    { title: "Trending", body: "Polka Dot prints are up 30% this week!" },
-    { title: "Restock Alert", body: "The Every-Wear Edge is back in stock." },
-    { title: "Style Tip", body: "Pair Crimson Skirts with white sneakers." },
-    { title: "New Arrival", body: "Summer Picnic collection is now live." }
+    { title: "Trending", body: "Floral prints are up 20% this week!" },
+    { title: "Restock Alert", body: "The Verona Vine is back in Medium." },
+    { title: "Style Tip", body: "Pair Crimson Skirts with white heels." },
+    { title: "New Arrival", body: "Summer Collection is now live." },
+    { title: "Best Seller", body: "Pink Rhapsody is selling out fast!" },
+    { title: "Fabric Note", body: "New Linen collection arriving soon." }
 ];
 
-// --- NEW COMPONENT: PRODUCT GALLERY ---
+// --- PRODUCT GALLERY COMPONENT ---
 const ProductGallery = ({ imagesStr, alt }) => {
     const images = imagesStr ? imagesStr.split(',').map(url => url.trim()).filter(url => url.length > 0) : [];
     const [currentIndex, setCurrentIndex] = useState(0);
@@ -118,6 +120,7 @@ export default function Chat() {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
 
+  // --- TOAST NOTIFICATIONS ---
   useEffect(() => {
     const interval = setInterval(() => {
         const randomTrend = trends[Math.floor(Math.random() * trends.length)];
@@ -160,6 +163,7 @@ export default function Chat() {
 
       let reply = data.response || data.content;
 
+      // Handle COD Receipt
       try {
         if (typeof reply === 'string' && reply.includes("COD_SUCCESS")) {
             const parsed = JSON.parse(reply);
@@ -167,7 +171,7 @@ export default function Chat() {
                 reply = parsed.message;
             }
         }
-      } catch (parseError) {}
+      } catch (e) {}
 
       reply = reply || "I apologize, I couldn't connect.";
 
@@ -183,7 +187,10 @@ export default function Chat() {
   };
 
   const renderContent = (content) => {
-    const imgRegex = /<img src="(.*?)" alt="(.*?)" \/>/g;
+    // ⚠️ CRITICAL FIX: Improved Regex to handle extra attributes like 'style="..."'
+    // Matches: <img src="URL" alt="ALT" (anything else) >
+    const imgRegex = /<img src="([^"]*)" alt="([^"]*)"[^>]*>/g;
+
     const parts = [];
     let lastIndex = 0;
     let match;
@@ -192,9 +199,14 @@ export default function Chat() {
       if (match.index > lastIndex) {
         parts.push(content.substring(lastIndex, match.index));
       }
+
+      // Render Gallery
+      // match[1] = src (comma separated URLs)
+      // match[2] = alt text
       parts.push(
           <ProductGallery key={match.index} imagesStr={match[1]} alt={match[2]} />
       );
+
       lastIndex = imgRegex.lastIndex;
     }
     if (lastIndex < content.length) {
@@ -282,12 +294,11 @@ export default function Chat() {
         </div>
       </section>
 
-      {/* TICKER AREA - UPDATED TO HANDLE FULL URLS */}
+      {/* TICKER AREA */}
       <div className={styles.tickerWrap}>
           <div className={styles.ticker}>
               {[...featuredProducts, ...featuredProducts].map((prod, i) => (
                   <div key={i} className={styles.tickerItem} onClick={() => handleSubmit(null, `Tell me about ${prod.name}`)}>
-                      {/* Check if image is a Full URL or needs the Base Path */}
                       <img
                           src={prod.img.startsWith('http') ? prod.img : `${CLOUDINARY_BASE}${prod.img}`}
                           alt={prod.name}
