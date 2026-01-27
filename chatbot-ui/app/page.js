@@ -1,4 +1,3 @@
-// app/page.js
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
@@ -20,6 +19,64 @@ const trends = [
     { title: "Style Tip", body: "Pair Crimson Skirts with white heels." },
     { title: "New Arrival", body: "Summer Collection is now live." }
 ];
+
+// --- NEW COMPONENT: PRODUCT GALLERY ---
+// Handles displaying single images or a swipeable gallery for multiple images
+const ProductGallery = ({ imagesStr, alt }) => {
+    // Split comma-separated links and clean whitespace
+    const images = imagesStr ? imagesStr.split(',').map(url => url.trim()).filter(url => url.length > 0) : [];
+    const [currentIndex, setCurrentIndex] = useState(0);
+
+    // Safety check
+    if (!images || images.length === 0) return null;
+
+    // If it's just one image, show it normally (no dots/slider needed)
+    if (images.length === 1) {
+        return <img src={images[0]} alt={alt} className={styles.productImage} />;
+    }
+
+    const nextImage = (e) => {
+        e.stopPropagation();
+        setCurrentIndex((prev) => (prev + 1) % images.length);
+    };
+
+    return (
+        <div className={styles.galleryContainer}>
+            <img
+                src={images[currentIndex]}
+                alt={`${alt} ${currentIndex + 1}`}
+                className={styles.galleryImage}
+                onClick={nextImage}
+            />
+
+            {/* Navigation Dots */}
+            <div className={styles.dotsContainer}>
+                {images.map((_, idx) => (
+                    <div
+                        key={idx}
+                        className={`${styles.dot} ${idx === currentIndex ? styles.dotActive : ''}`}
+                        onClick={(e) => { e.stopPropagation(); setCurrentIndex(idx); }}
+                    />
+                ))}
+            </div>
+
+            {/* Optional: Counter (e.g., 1/4) */}
+            <div style={{
+                position: 'absolute',
+                top: '10px',
+                right: '10px',
+                background: 'rgba(0,0,0,0.6)',
+                color: 'white',
+                padding: '2px 6px',
+                borderRadius: '4px',
+                fontSize: '10px',
+                pointerEvents: 'none'
+            }}>
+                {currentIndex + 1}/{images.length}
+            </div>
+        </div>
+    );
+};
 
 export default function Chat() {
   const [query, setQuery] = useState('');
@@ -111,18 +168,35 @@ export default function Chat() {
     }
   };
 
-  // Helper: Render Images
+  // --- HELPER: RENDER CONTENT WITH GALLERY ---
   const renderContent = (content) => {
+    // Regex finds <img src="..." alt="..." />
     const imgRegex = /<img src="(.*?)" alt="(.*?)" \/>/g;
     const parts = [];
     let lastIndex = 0;
     let match;
+
     while ((match = imgRegex.exec(content)) !== null) {
-      if (match.index > lastIndex) parts.push(content.substring(lastIndex, match.index));
-      parts.push(<img key={match.index} src={match[1]} alt={match[2]} className={styles.productImage} />);
+      // 1. Push text before the image
+      if (match.index > lastIndex) {
+        parts.push(content.substring(lastIndex, match.index));
+      }
+
+      // 2. Push the ProductGallery component instead of a plain <img>
+      // match[1] is the src string (which might contain commas)
+      // match[2] is the alt text
+      parts.push(
+          <ProductGallery key={match.index} imagesStr={match[1]} alt={match[2]} />
+      );
+
       lastIndex = imgRegex.lastIndex;
     }
-    if (lastIndex < content.length) parts.push(content.substring(lastIndex));
+
+    // 3. Push any remaining text after the last image
+    if (lastIndex < content.length) {
+        parts.push(content.substring(lastIndex));
+    }
+
     return parts.length > 0 ? parts : content;
   };
 
@@ -200,11 +274,11 @@ export default function Chat() {
             />
 
             <button type="submit" className={styles.sendButton} disabled={isLoading || (!query && !selectedFile)}>
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="22" y1="2" x2="11" y2="13"></line>
-        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-    </svg>
-</button>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+            </button>
           </form>
         </div>
       </section>
