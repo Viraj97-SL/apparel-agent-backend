@@ -187,31 +187,61 @@ export default function Chat() {
   };
 
   const renderContent = (content) => {
-    // ⚠️ CRITICAL FIX: Improved Regex to handle extra attributes like 'style="..."'
-    // Matches: <img src="URL" alt="ALT" (anything else) >
-    const imgRegex = /<img src="([^"]*)" alt="([^"]*)"[^>]*>/g;
+    // ⚠️ CRITICAL FIX: Improved Regex
+    // This regex looks for an <img tag, captures the src attribute,
+    // captures the alt attribute, and ignores everything else (like style="...").
+    // It handles attributes in different orders too.
+    const imgRegex = /<img\s+(?=[^>]*src="([^"]*)")(?=[^>]*alt="([^"]*)")[^>]*>/g;
+
+    // Fallback regex for simpler tags or if the above is too strict on order
+    // This one just grabs src and alt wherever they are
+    // const imgRegexSimple = /<img[^>]+src="([^">]+)"[^>]+alt="([^">]+)"[^>]*>/g;
 
     const parts = [];
     let lastIndex = 0;
     let match;
 
-    while ((match = imgRegex.exec(content)) !== null) {
-      if (match.index > lastIndex) {
-        parts.push(content.substring(lastIndex, match.index));
-      }
+    // We'll use a simpler, more robust regex loop manually if needed,
+    // but let's try a standard loose match first.
+    // Matches: <img ... src="..." ... alt="..." ... > OR <img ... alt="..." ... src="..." ... >
+    // Since JS regex lookaheads can be tricky in loops, let's use a two-step approach.
 
-      // Render Gallery
-      // match[1] = src (comma separated URLs)
-      // match[2] = alt text
-      parts.push(
-          <ProductGallery key={match.index} imagesStr={match[1]} alt={match[2]} />
-      );
+    // Strategy: Split by <img ... /> tags, then parse the attributes from the tag string.
 
-      lastIndex = imgRegex.lastIndex;
+    const tagRegex = /<img\s+[^>]*>/g;
+
+    while ((match = tagRegex.exec(content)) !== null) {
+        // Push text preceding the tag
+        if (match.index > lastIndex) {
+            parts.push(content.substring(lastIndex, match.index));
+        }
+
+        const tagString = match[0];
+
+        // Extract src
+        const srcMatch = /src="([^"]*)"/.exec(tagString);
+        const src = srcMatch ? srcMatch[1] : "";
+
+        // Extract alt
+        const altMatch = /alt="([^"]*)"/.exec(tagString);
+        const alt = altMatch ? altMatch[1] : "Product Image";
+
+        if (src) {
+             parts.push(
+                <ProductGallery key={match.index} imagesStr={src} alt={alt} />
+            );
+        } else {
+            // If for some reason src is missing, just render the tag string (unlikely)
+             parts.push(tagString);
+        }
+
+        lastIndex = tagRegex.lastIndex;
     }
+
     if (lastIndex < content.length) {
         parts.push(content.substring(lastIndex));
     }
+
     return parts.length > 0 ? parts : content;
   };
 
