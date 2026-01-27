@@ -83,7 +83,23 @@ export default function Chat() {
       const response = await fetch(`${API_URL}/chat`, { method: 'POST', body: formData });
       const data = await response.json();
 
-      const reply = data.response || data.content || "I apologize, I couldn't connect.";
+      // --- LOGIC: HANDLE COD & STANDARD RESPONSES ---
+      let reply = data.response || data.content;
+
+      // If the backend returned a JSON string for COD, parse it to show the clean message
+      try {
+        if (typeof reply === 'string' && reply.includes("COD_SUCCESS")) {
+            const parsed = JSON.parse(reply);
+            if (parsed.payment_url === "COD_SUCCESS") {
+                reply = parsed.message; // Show the nice receipt text
+            }
+        }
+      } catch (parseError) {
+        // Not JSON, just normal text. Keep 'reply' as is.
+      }
+
+      reply = reply || "I apologize, I couldn't connect.";
+
       setChatHistory((prev) => [...prev, { role: 'ai', content: reply }]);
       if (data.thread_id) setThreadId(data.thread_id);
 
