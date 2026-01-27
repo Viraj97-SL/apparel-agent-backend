@@ -116,14 +116,34 @@ def run_replicate_vto(thread_id: str, user_image_path: str, product_image_url: s
     if not local_product_path:
         return "Error: Could not find the product image on Cloudinary."
 
+    # --- CATEGORY DETECTION START ---
+    category = "dresses"  # Default backup
+    p_name_lower = product_name.lower()
+
+    # A. LOWER BODY
+    if any(k in p_name_lower for k in ["skirt", "pant", "trouser", "bottom", "polka dot chick"]):
+        category = "lower_body"
+    # B. UPPER BODY
+    elif any(k in p_name_lower for k in ["top", "blouse", "shirt", "upper", "meridian"]):
+        category = "upper_body"
+    # C. DRESSES (Full Body)
+    elif any(k in p_name_lower for k in
+             ["dress", "frock", "gown", "maxi", "jumpsuit", "wild bloom", "pink rhapsody", "verona", "blue floral",
+              "crimson canvas", "chic rhythms", "earth and artisan", "crimson cascade", "meadow"]):
+        category = "dresses"
+
+    print(f"-> Detected Category: {category}")
+    # --- CATEGORY DETECTION END ---
+
     try:
         output = replicate.run(
-            "cuuupid/idm-vton:0513734a452173b8173e907e3a59d19a36266e55b48528559432bd21c7d7e985",
+            "cuuupid/idm-vton:c871bb9b0466074280c2a9a7386749c8b0f4154817d1220268597f9c73335508",
             input={
                 "garm_img": open(local_product_path, "rb"),
                 "human_img": open(user_image_path, "rb"),
                 "garment_des": product_name,
-                "crop": True,
+                "category": category,  # <--- NEW PARAMETER
+                "crop": False,  # Changed to False for better full-body results
                 "seed": 42
             }
         )
