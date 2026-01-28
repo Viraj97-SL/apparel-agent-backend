@@ -1,33 +1,21 @@
 import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from dotenv import load_dotenv
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-load_dotenv()
-
-# Get URL from Railway env var, or fallback to local SQLite for testing
+# Ensure we get the Database URL
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-# Fix for Railway's Postgres URL (sometimes starts with postgres:// instead of postgresql://)
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
 if not DATABASE_URL:
-    # Fallback to local SQLite if no cloud DB is found
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    DATABASE_URL = f"sqlite:///{os.path.join(BASE_DIR, 'apparel.db')}"
-    print(f"⚠️  No DATABASE_URL found. Using local SQLite: {DATABASE_URL}")
+    # Fallback for local testing if needed
+    DATABASE_URL = "sqlite:///./test.db"
 
-# Create the Engine
-engine = create_engine(DATABASE_URL)
+# 🛠️ FIX: Add pool_pre_ping=True to prevent SSL EOF errors
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,  # Checks connection life before using it
+    pool_recycle=1800    # Recycles connections every 30 mins
+)
 
-# Create SessionLocal class
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-def get_db():
-    """Dependency for FastAPI routes to get a DB session."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# This Base is used for models
+Base = declarative_base()
