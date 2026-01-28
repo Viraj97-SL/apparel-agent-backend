@@ -1,19 +1,20 @@
 import os
-import json
 import sys
 import asyncio
 from dotenv import load_dotenv
-from typing import TypedDict, Annotated, Sequence, List
+from typing import TypedDict, Annotated, Sequence
 import operator
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_groq import ChatGroq
 from langchain_community.tools.tavily_search import TavilySearchResults
 # MCP Adapter Imports
 from langchain_mcp_adapters.client import MultiServerMCPClient
 # --- Our Custom Imports ---
 from app.chat_with_rag import create_rag_chain
+# --- NEW IMPORT: Sales Tools ---
+from app.sales_tools import create_draft_order, confirm_order_details
+
 # --- LangGraph Imports ---
 from langgraph.graph import StateGraph, END
 # Use AsyncSqliteSaver for async support
@@ -24,7 +25,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 import nest_asyncio
 
-# Apply the patch for nested event loops (Fixes RuntimeError on deployment)
+# Apply the patch for nested event loops
 nest_asyncio.apply()
 
 # Load environment variables
@@ -33,13 +34,10 @@ load_dotenv()
 # --- 1. CRITICAL: Capture and Validate API Keys ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not GOOGLE_API_KEY:
     print("❌ CRITICAL ERROR: GOOGLE_API_KEY is missing!")
-    raise ValueError("GOOGLE_API_KEY not found. Please check your Railway settings.")
-if not TAVILY_API_KEY:
-    print("WARNING: TAVILY_API_KEY not found. Web search will fail.")
+    raise ValueError("GOOGLE_API_KEY not found.")
 
 
 # --- 2. Define Agent State ---
@@ -53,14 +51,14 @@ class AgentState(TypedDict):
 # --- HYBRID BRAIN SETUP ---
 # 1. The "Big Brain" (Supervisor)
 llm_supervisor = ChatGoogleGenerativeAI(
-    model="gemini-2.5-pro",
+    model="gemini-2.0-flash",  # Or gemini-1.5-pro
     temperature=0.2,
     google_api_key=GOOGLE_API_KEY
 )
 
 # 2. The "Fast Worker" (Data / Web / Tool Agents)
 llm_worker = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-2.0-flash",
     temperature=0.0,
     google_api_key=GOOGLE_API_KEY
 )
@@ -68,23 +66,17 @@ llm_worker = ChatGoogleGenerativeAI(
 # --- Agent 1: The Policy Agent (RAG) ---
 print("Initializing Policy Agent (RAG)...")
 rag_agent_chain = create_rag_chain()
-if rag_agent_chain is None:
-    print("Error: RAG chain (Policy Agent) could not be created.")
-    exit()
 print("Policy Agent initialized.")
 
-# --- Agent 2: The Data Query & Sales Agents (via MCP) ---
-print("Initializing Data Query Tools via MCP...")
-python_path = sys.executable  # Path to your Python executable
+# --- Agent 2: The Data Query & Sales Agents ---
+print("Initializing Data & Sales Tools...")
+python_path = sys.executable
 
 
-async def initialize_data_tools():
-    # 1. Get the project root directory (one level up from this file)
+async def initialize_tools():
+    # 1. Setup MCP (Data Query Tools)
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(current_dir)
-
-    # 2. Prepare the environment variables
-    # We copy the current environment and add PYTHONPATH so the subprocess can find 'app'
     env_vars = dict(os.environ)
     env_vars["PYTHONPATH"] = project_root
 
@@ -98,36 +90,35 @@ async def initialize_data_tools():
             }
         }
     )
-    tools = await client.get_tools()
-    return tools, client
+    mcp_tools = await client.get_tools()
+
+    # 2. Setup Local Sales Tools (Imported manually)
+    local_sales_tools = [create_draft_order, confirm_order_details]
+
+    return mcp_tools, local_sales_tools, client
 
 
-# Run the async init and assign results
-data_tools_list, mcp_client = asyncio.run(initialize_data_tools())
-data_tool_lookup = {t.name: t for t in data_tools_list}
+# Initialize tools
+mcp_tools_list, sales_tools_list, mcp_client = asyncio.run(initialize_tools())
 
-# --- UPDATE: SPLIT TOOLS BY AGENT ---
-sales_tools_names = ["create_draft_order", "generate_payment_link"]
-# Filter tools: Query agent gets everything EXCEPT sales tools; Sales agent gets ONLY sales tools
-query_tools = [t for t in data_tools_list if t.name not in sales_tools_names]
-sales_tools = [t for t in data_tools_list if t.name in sales_tools_names]
+# Create a Master Lookup for the Executor Node
+# We merge both lists so the executor can find tools by name
+all_tools = mcp_tools_list + sales_tools_list
+data_tool_lookup = {t.name: t for t in all_tools}
 
 # Bind specific tools to specific LLM instances
-llm_query = llm_worker.bind_tools(query_tools)
-llm_sales = llm_worker.bind_tools(sales_tools)
+llm_query = llm_worker.bind_tools(mcp_tools_list)
+llm_sales = llm_worker.bind_tools(sales_tools_list)
 
-print(f"Data Query tools initialized: {[t.name for t in query_tools]}")
-print(f"Sales Agent tools initialized: {[t.name for t in sales_tools]}")
+print(f"Data Query tools initialized: {[t.name for t in mcp_tools_list]}")
+print(f"Sales Agent tools initialized: {[t.name for t in sales_tools_list]}")
 
 # --- Agent 3: The Web Search Agent ---
 print("Initializing Web Search Tool...")
 web_search_tool = TavilySearchResults(max_results=3, name="tavily_general_search")
 web_search_tools_list = [web_search_tool]
-
-# Bind tools to the WORKER model
 llm_with_web_search_tools = llm_worker.bind_tools(web_search_tools_list)
 web_search_tool_lookup = {t.name: t for t in web_search_tools_list}
-print("Web Search tool initialized.")
 
 
 # --- 4. Define Graph Nodes (all async) ---
@@ -137,61 +128,51 @@ async def rag_agent_node(state: AgentState):
     print("\n--- Calling Policy Agent ---")
     messages = state["messages"]
     last_human_message = messages[-1].content
-    # Use .ainvoke for async RAG
     response_str = await rag_agent_chain.ainvoke(last_human_message)
     return {"messages": [AIMessage(content=response_str)]}
 
 
 async def data_query_agent_node(state: AgentState):
     """Calls the WORKER LLM bound to the Query tools."""
-    print("\n--- Calling Data Query Agent (Worker LLM) ---")
+    print("\n--- Calling Data Query Agent ---")
 
     system_prompt = """You are an Inventory Assistant. 
-    **GOAL:** Provide helpful answers about products (Price, Size, Stock) and orders (Status, Returns).
-
     **GUIDELINES:**
-    1. Use 'list_products' if the user asks to see what we sell.
+    1. Use 'list_products' to see what we sell.
     2. Use 'query_product_database' for specific items.
-    3. If the tool says "No products found", apologize and do NOT search the web.
-    4. **Handling Sales:** If a user wants to BUY something, just output their request or say "I'll connect you to sales." The Supervisor will route them to the Sales Agent.
-    5. **Images:** Always append the exact image tags (e.g. <img src...>) from the tool output to your message.
+    3. If the tool says "No products found", apologize.
+    4. **Images:** Always append the exact image tags (e.g. <img src...>) from the tool output to your message.
     """
 
     messages = [HumanMessage(content=system_prompt)] + state["messages"]
-    # Use llm_query (bound to query tools)
     ai_response = await llm_query.ainvoke(messages)
     return {"messages": [ai_response]}
 
 
 async def sales_agent_node(state: AgentState):
     """Calls the WORKER LLM bound to the Sales tools."""
-    print("\n--- Calling Sales Agent (Worker LLM) ---")
+    print("\n--- Calling Sales Agent ---")
 
-    system_prompt = """You are the Sales Agent. Your goal is to CLOSE THE DEAL professionally and warmly.
+    system_prompt = """You are the Sales Agent. Your goal is to secure the order.
 
-    **YOUR PROCESS:**
-    1. **Multi-Step Collection:** You do NOT need all details in one message. It is better to be conversational.
-       - Example: First ask for the product/size. Then ask for the name/email. Then address.
-       - Don't overwhelm the user with a giant list of questions unless they ask.
+    **PROCESS:**
+    1. **Clarify the Order:** Ensure you know the Product Name, Size, and Quantity.
+       - If they say "I want that", check history to see what "that" is.
+       - If they want multiple items, confirm the list.
 
-    2. **Handling Multiple Products (The "Cart"):**
-       - The user might want to buy multiple items (e.g., "I want the Verona dress" ... later ... "Also add the Crimson skirt").
-       - **CRITICAL:** Check the *entire conversation history*. If they mentioned Item A earlier and Item B now, the final order must include **BOTH**.
-       - Before creating the order, confirm the full list: "So that's one Verona (M) and one Crimson Skirt (S). Correct?"
+    2. **Create Draft:** Call 'create_draft_order' with the details.
+       - This tool returns the Total Price. Show this to the user.
 
-    3. **Closing the Sale:**
-       - Once you have Name, Email, Address, Phone, and ALL Items (with sizes/quantities), call the 'create_draft_order' tool.
-       - The 'items' argument must be a valid JSON String representing a LIST of items.
-       - Example: items='[{"product_name": "Verona", "size": "M", "quantity": 1}, {"product_name": "Crimson", "size": "S", "quantity": 1}]'
+    3. **Get Customer Info:** After the draft is created, ask for:
+       - Full Name
+       - Shipping Address
+       - Phone Number
 
-    4. **Payment:**
-       - After the order is created, call 'generate_payment_link' and share the URL.
+    4. **Confirm:** Once you have the info, call 'confirm_order_details'.
+       - This will finalize the order in the database.
+       - If successful, thank them and mention their order is confirmed!
 
-    **FORMATTING RULES:**
-    - **Do NOT use asterisks (*)** or bullet points for every single line. It looks messy.
-    - Write in full, polite sentences.
-    - Bad: "* Name? * Email?"
-    - Good: "Could you please share your full name and email address?"
+    **TONE:** Professional, efficient, and warm.
     """
 
     messages = [HumanMessage(content=system_prompt)] + state["messages"]
@@ -199,7 +180,7 @@ async def sales_agent_node(state: AgentState):
 
 
 async def data_query_tool_executor_node(state: AgentState):
-    """Executes the Data Query AND Sales tools (Shared MCP Executor)."""
+    """Executes BOTH Data Query and Sales tools."""
     print("\n--- Calling Data/Sales Tool Executor ---")
     messages = state["messages"]
     last_message = messages[-1]
@@ -220,67 +201,52 @@ async def data_query_tool_executor_node(state: AgentState):
         if not tool_to_call:
             tasks.append((tool_call["id"], f"Error: Tool '{tool_name}' not found."))
         else:
-            tasks.append(
-                (tool_call["id"], tool_to_call.ainvoke(tool_args))
-            )
-    try:
-        awaitable_tasks = [task for _, task in tasks if asyncio.iscoroutine(task)]
-        results = await asyncio.gather(*awaitable_tasks)
-        result_iter = iter(results)
-        for i, (tool_call_id, task_or_error) in enumerate(tasks):
-            if asyncio.iscoroutine(task_or_error):
-                observation = next(result_iter)
+            # Handle both async and sync tools
+            if asyncio.iscoroutinefunction(tool_to_call.invoke) or hasattr(tool_to_call, 'ainvoke'):
+                tasks.append((tool_call["id"], tool_to_call.ainvoke(tool_args)))
             else:
-                observation = task_or_error
-            tool_messages.append(
-                ToolMessage(content=str(observation), tool_call_id=tool_call_id)
-            )
-    except Exception as e:
-        print(f"Error during tool execution: {e}")
-        for tool_call in last_message.tool_calls:
-            tool_messages.append(
-                ToolMessage(content=f"Error executing tool {tool_call['name']}: {e}", tool_call_id=tool_call["id"])
-            )
+                # Wrap sync tool in a dummy async result for uniform handling
+                tasks.append((tool_call["id"], tool_to_call.invoke(tool_args)))
+
+    # Execute tasks
+    results = []
+    for tool_id, task in tasks:
+        try:
+            if asyncio.iscoroutine(task):
+                res = await task
+            else:
+                res = task
+            results.append((tool_id, res))
+        except Exception as e:
+            results.append((tool_id, f"Error: {e}"))
+
+    for tool_id, result in results:
+        tool_messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
+
     print("Tool Observations:", [msg.content for msg in tool_messages])
     return {"messages": tool_messages}
 
 
 async def web_search_agent_node(state: AgentState):
-    """Calls the WORKER LLM bound to the Web Search tools."""
-    print("\n--- Calling Web Search Agent (Worker LLM) ---")
-
-    system_prompt = (
-        "You are a helpful assistant with access to a web search tool. "
-        "Your task is to answer the user's question using the 'tavily_general_search' tool. "
-        "Do not hallucinate tool names. Simply call the tool with the user's query."
-    )
-
-    messages = [HumanMessage(content=system_prompt)] + list(state["messages"])
+    print("\n--- Calling Web Search Agent ---")
+    messages = [HumanMessage(content="Use tavily_general_search")] + list(state["messages"])
     ai_response = await llm_with_web_search_tools.ainvoke(messages)
     return {"messages": [ai_response]}
 
 
 async def web_search_tool_executor_node(state: AgentState):
-    """Executes the Web Search tools sequentially."""
-    print("\n--- Calling Web Search Tool Executor ---")
+    print("\n--- Calling Web Search Executor ---")
     messages = state["messages"]
     last_message = messages[-1]
     tool_messages = []
-    if not last_message.tool_calls:
-        return {"messages": []}
+    if not last_message.tool_calls: return {"messages": []}
+
     for tool_call in last_message.tool_calls:
-        tool_name = tool_call["name"]
-        tool_args = tool_call["args"]
-        print(f" -> Executing tool: {tool_name} with args {tool_args}")
-        tool_to_call = web_search_tool_lookup.get(tool_name)
-        if not tool_to_call:
-            observation = f"Error: Tool '{tool_name}' not found."
-        else:
-            try:
-                observation = tool_to_call.invoke(tool_args)
-            except Exception as e:
-                observation = f"Error executing tool {tool_name}: {e}"
-        tool_messages.append(ToolMessage(content=str(observation), tool_call_id=tool_call["id"]))
+        tool_to_call = web_search_tool_lookup.get(tool_call["name"])
+        if tool_to_call:
+            res = tool_to_call.invoke(tool_call["args"])
+            tool_messages.append(ToolMessage(content=str(res), tool_call_id=tool_call["id"]))
+
     return {"messages": tool_messages}
 
 
@@ -288,9 +254,7 @@ async def web_search_tool_executor_node(state: AgentState):
 print("Initializing Supervisor...")
 
 
-# Define Route tool
 class RouteArgs(BaseModel):
-    # Added "sales_agent" to the enum
     next_node: str = Field(..., enum=["rag_agent", "data_query_agent", "sales_agent", "web_search_agent", "__end__"])
 
 
@@ -300,41 +264,20 @@ def route(next_node: str) -> str:
     return next_node
 
 
-# Bind route tool to the SUPERVISOR model
 llm_with_route = llm_supervisor.bind_tools([route])
 
 supervisor_prompt = ChatPromptTemplate.from_messages(
     [
-        ("system", """You are the 'supervisor' of an apparel store customer service system.
+        ("system", """You are the 'supervisor' of an apparel store system.
 
-        **YOUR GOAL:** Route the conversation to the right specialist, OR end the turn if the user's question is answered.
+        **ROUTING RULES:**
+        1. **'rag_agent':** General greetings, policies, shipping info.
+        2. **'data_query_agent':** BROWSING. Questions about products, prices, stock, sizes.
+        3. **'sales_agent':** BUYING. If the user says "I want to buy", "add to cart", "purchase", "take my money", or gives shipping info.
+        4. **'web_search_agent':** ONLY for generic fashion trends.
 
-        **AGENTS:**
-        1. 'rag_agent': The *Policy Agent*. Use for questions about store policies (shipping, returns, T&Cs), and generic greetings/thanks.
-        2. 'data_query_agent': The *Database Agent*. Use for questions about products (price, size, stock), browsing ("what do you sell?"), and checking specific item details.
-        3. 'sales_agent': The *Sales Agent*. Use ONLY for Buying, Checkout, and Ordering intents (e.g., "I want to buy", "Purchase this", giving shipping info).
-        4. 'web_search_agent': The *Public Web Searcher*. Use ONLY for general fashion trends or external news. **NEVER** use this for specific product questions.
-
-        **CRITICAL ROUTING RULES:**
-        1. **PRODUCT NAMES = DATABASE:** If the user asks about specific items (e.g., "Pink Rhapsody", "Verona Vine", "Crimson Canvas", "Wild Bloom", "Chic Rhythms"), you **MUST** route to 'data_query_agent'. Do NOT use 'web_search_agent'.
-
-        2. **SHOPPING INTENT:** If the user asks "Tell me about [Name]", "Do you have [Name]", or clicks a product tile, assume they are shopping -> 'data_query_agent'.
-
-        3. **CHECK THE LAST MESSAGE:** - If the *last message* is from an **AI Agent** (not the User) and it answers the question or provides the requested info, you MUST route to **'__end__'**.
-           - If the *last message* is from the **User**, route it to the correct specialist.
-
-        4. **CHECK FOR FOLLOW-UPS:** - If the AI asked for clarification on a product -> 'data_query_agent'.
-           - If the AI asked for shipping/payment info -> 'sales_agent'.
-
-        5. **GREETINGS/CLOSINGS:**
-           - "Hi", "Hello", "Thanks" -> 'rag_agent'.
-           - "Bye", "Exit" -> '__end__'.
-
-        **SECURITY PROTOCOL:**
-        1. You are an Apparel Customer Service Agent. Refuse irrelevant questions (coding, math, politics).
-        2. If a user asks for "all orders", REFUSE.
-
-        You MUST call the 'route' tool with the next_node argument.
+        **CRITICAL:** - If the user selects a product and says "I want this", route to 'sales_agent'.
+        - If the last message was a Tool Output confirming an order, route to '__end__'.
         """),
         MessagesPlaceholder(variable_name="messages"),
     ]
@@ -342,23 +285,18 @@ supervisor_prompt = ChatPromptTemplate.from_messages(
 
 
 async def supervisor_router(state: AgentState):
-    """Routes the conversation to the appropriate agent."""
     print("\n--- Supervisor Routing ---")
     messages = state["messages"]
     last_message = messages[-1]
 
-    # 1. HARD STOP: If an agent just spoke, end the turn.
     if isinstance(last_message, AIMessage) and not last_message.tool_calls:
-        print("Supervisor decided: -> __end__ (Agent finished)")
+        print("Supervisor decided: -> __end__")
         return {"next": "__end__"}
 
-    # 2. Ask the Supervisor LLM
     ai_response = await (supervisor_prompt | llm_with_route).ainvoke({"messages": messages})
 
-    # 3. SAFE PARSING
     if ai_response.tool_calls:
-        args = ai_response.tool_calls[0]["args"]
-        next_node = args.get("next_node", "__end__")
+        next_node = ai_response.tool_calls[0]["args"].get("next_node", "__end__")
     else:
         next_node = "__end__"
 
@@ -368,101 +306,43 @@ async def supervisor_router(state: AgentState):
 
 # --- 6. Define Conditional Edges ---
 def check_for_tool_calls(state: AgentState) -> str:
-    """If the agent called tools, run the executor. Otherwise, loop back to supervisor."""
     last_message = state["messages"][-1]
-    if last_message.tool_calls:
-        return "continue_with_tools"
-    else:
-        return "supervisor"
+    return "continue_with_tools" if last_message.tool_calls else "supervisor"
 
 
-# --- 7. Build the Graph ---
 # --- 7. Build the Graph ---
 print("Building graph...")
 workflow = StateGraph(AgentState)
 
-# Add all nodes
 workflow.add_node("supervisor", supervisor_router)
 workflow.add_node("rag_agent", rag_agent_node)
 workflow.add_node("data_query_agent", data_query_agent_node)
 workflow.add_node("sales_agent", sales_agent_node)
-
-# --- CRITICAL FIX: Split Executors ---
-# We use the same function logic, but register it as two distinct nodes.
-# This allows us to route "Data" results back to the Data Agent
-# and "Sales" results back to the Sales Agent.
 workflow.add_node("data_query_tool_executor", data_query_tool_executor_node)
-workflow.add_node("sales_tool_executor", data_query_tool_executor_node)
-
+workflow.add_node("sales_tool_executor", data_query_tool_executor_node)  # Re-use the executor function
 workflow.add_node("web_search_agent", web_search_agent_node)
 workflow.add_node("web_search_tool_executor", web_search_tool_executor_node)
 
-# Set the entry point
 workflow.set_entry_point("supervisor")
 
-# Supervisor conditional edges
-workflow.add_conditional_edges(
-    "supervisor",
-    lambda state: state["next"],
-    {
-        "rag_agent": "rag_agent",
-        "data_query_agent": "data_query_agent",
-        "sales_agent": "sales_agent",
-        "web_search_agent": "web_search_agent",
-        "__end__": END,
-    },
-)
+workflow.add_conditional_edges("supervisor", lambda state: state["next"])
 
-# RAG agent edge
-workflow.add_conditional_edges(
-    "rag_agent",
-    check_for_tool_calls,
-    {
-        "continue_with_tools": "supervisor",
-        "supervisor": "supervisor"
-    }
-)
+workflow.add_conditional_edges("rag_agent", check_for_tool_calls,
+                               {"continue_with_tools": "supervisor", "supervisor": "supervisor"})
+workflow.add_conditional_edges("data_query_agent", check_for_tool_calls,
+                               {"continue_with_tools": "data_query_tool_executor", "supervisor": "supervisor"})
+workflow.add_conditional_edges("sales_agent", check_for_tool_calls,
+                               {"continue_with_tools": "sales_tool_executor", "supervisor": "supervisor"})
+workflow.add_conditional_edges("web_search_agent", check_for_tool_calls,
+                               {"continue_with_tools": "web_search_tool_executor", "supervisor": "supervisor"})
 
-# Data Query Edges
-workflow.add_conditional_edges(
-    "data_query_agent",
-    check_for_tool_calls,
-    {
-        "continue_with_tools": "data_query_tool_executor", # Go to Data Executor
-        "supervisor": "supervisor",
-    },
-)
-
-# Sales Agent Edges
-workflow.add_conditional_edges(
-    "sales_agent",
-    check_for_tool_calls,
-    {
-        "continue_with_tools": "sales_tool_executor", # Go to Sales Executor
-        "supervisor": "supervisor",
-    },
-)
-
-# --- CRITICAL FIX: Close the Loop ---
-# Route tool outputs BACK to the agents so they can read the data and answer the user.
 workflow.add_edge("data_query_tool_executor", "data_query_agent")
 workflow.add_edge("sales_tool_executor", "sales_agent")
-
-# Web Search agent edges
-workflow.add_conditional_edges(
-    "web_search_agent",
-    check_for_tool_calls,
-    {
-        "continue_with_tools": "web_search_tool_executor",
-        "supervisor": "supervisor",
-    },
-)
 workflow.add_edge("web_search_tool_executor", "web_search_agent")
 
 
-# --- 8. Compile the Graph and Set Up Memory ---
+# --- 8. Compile ---
 async def create_memory():
-    # Use a file-based DB for persistence across server restarts
     conn = await aiosqlite.connect("checkpoints.db")
     return AsyncSqliteSaver(conn=conn)
 
