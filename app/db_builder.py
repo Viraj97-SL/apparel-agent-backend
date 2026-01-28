@@ -89,20 +89,22 @@ def populate_initial_data():
     db: Session = SessionLocal()
 
     # --- ⚠️ CORRECTED CLEARING SECTION ⚠️ ---
-    # --- COMMENTED OUT TO PROTECT DATA ---
-    # print("⚠️  Force-Clearing Database for fresh seed...")
-    # try:
-    #     # 1. Delete Inventory FIRST (The Child)
-    #     # db.query(Inventory).delete()
-    #     # 2. Delete Product SECOND (The Parent)
-    #     # db.query(Product).delete()
-    #     # db.commit()
-    #     # print("✅ Database cleared successfully.")
-    # except Exception as e:
-    #     # db.rollback()
-    #     # print(f"❌ Error clearing database: {e}")
-    #     # return
-    # ------------------------------------------
+    print("⚠️ Force-Clearing Database for fresh seed...")
+    try:
+        # Delete dependent tables first (child relationships)
+        db.query(OrderItem).delete()  # Child of Order
+        db.query(Order).delete()
+        db.query(Inventory).delete()  # Child of Product
+        db.query(Product).delete()
+        db.query(Customer).delete()
+        db.query(Return).delete()
+        db.query(RestockNotification).delete()
+        db.commit()
+        print("✅ Database cleared successfully.")
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error clearing database: {e}")
+        return
 
     print("⚠️ Seeding data...")
 

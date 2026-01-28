@@ -1,384 +1,470 @@
 /* app/Chat.module.css */
 
 /* --- 1. CORE VARIABLES (Modern Luxury) --- */
+
 .container {
-    /* Background: Deep "Void" Black */
-    --bg-deep: #000000;
-    --bg-gradient: radial-gradient(circle at 50% 0%, #1c1c1c 0%, #000000 80%);
+  /* Background: Deep "Void" Black */
+  --bg-deep: #000000;
+  --bg-gradient: radial-gradient(circle at 50% 0%, #1c1c1c 0%, #000000 80%);
 
-    /* New Color: "Champagne Gold" (Lighter, modern, metallic) */
-    --gold-primary: #E8D3A8;
-    --gold-secondary: #C4A874;
-    --gold-glow: rgba(232, 211, 168, 0.3);
+  /* New Color: "Champagne Gold" (Lighter, modern, metallic) */
+  --gold-primary: #E8D3A8;
+  --gold-secondary: #C4A874;
+  --gold-glow: rgba(232, 211, 168, 0.3);
 
-    /* Glass Effect */
-    --glass-dark: rgba(10, 10, 10, 0.85);
-    --glass-border: rgba(232, 211, 168, 0.15); /* Faint Champagne */
+  /* Glass Effect */
+  --glass-dark: rgba(10, 10, 10, 0.85);
+  --glass-border: rgba(232, 211, 168, 0.15); /* Faint Champagne */
 
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    width: 100vw;
-    background: var(--bg-gradient);
-    color: #fff;
-    font-family: var(--font-inter), sans-serif;
-    overflow: hidden;
-    position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  background: var(--bg-gradient);
+  color: #fff;
+  font-family: var(--font-inter), sans-serif;
+  overflow: hidden;
+  position: relative;
 }
 
 /* --- 2. HEADER --- */
+
 .header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 15px 30px;
-    z-index: 10;
-    border-bottom: 1px solid rgba(255,255,255,0.05);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 30px;
+  z-index: 10;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
 }
 
 .brandContainer {
-    display: flex;
-    align-items: center;
-    gap: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .aiRing {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    border: 2px solid var(--gold-primary);
-    box-shadow: 0 0 10px var(--gold-glow);
-    animation: pulse 3s infinite;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--gold-primary);
+  box-shadow: 0 0 10px var(--gold-glow);
+  animation: pulse 3s infinite;
 }
 
 .brandName {
-    font-family: var(--font-cinzel), serif;
-    font-size: 22px;
-    font-weight: 700;
-    letter-spacing: 2px;
-    text-transform: uppercase;
+  font-family: var(--font-cinzel), serif;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
 
-    /* Metallic Gradient Text Effect */
-    background: linear-gradient(to right, #E8D3A8, #FFF5D6, #C4A874);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+  /* Metallic Gradient Text Effect */
+  background: linear-gradient(to right, #E8D3A8, #FFF5D6, #C4A874);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .modeSelect {
-    background: rgba(255, 255, 255, 0.05);
-    color: var(--gold-primary);
-    border: 1px solid var(--glass-border);
-    padding: 8px 12px;
-    border-radius: 20px;
-    font-size: 13px;
-    font-family: var(--font-inter);
-    outline: none;
-    cursor: pointer;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--gold-primary);
+  border: 1px solid var(--glass-border);
+  padding: 8px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-family: var(--font-inter);
+  outline: none;
+  cursor: pointer;
 }
 
 /* --- 3. MAIN CHAT AREA --- */
+
 .chatArea {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    max-width: 800px;
-    width: 95%; /* Wider on mobile */
-    margin: 10px auto 100px auto; /* Bottom margin for ticker */
-    background: var(--glass-dark);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid var(--glass-border);
-    border-radius: 16px;
-    overflow: hidden;
-    position: relative;
-    z-index: 5;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  max-width: 800px;
+  width: 95%; /* Wider on mobile */
+  margin: 10px auto 100px auto; /* Bottom margin for ticker */
+  background: var(--glass-dark);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  overflow: hidden;
+  position: relative;
+  z-index: 5;
 }
 
 .messageList {
-    flex: 1;
-    overflow-y: auto;
-    padding: 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
-.messageList::-webkit-scrollbar { width: 4px; }
-.messageList::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+.messageList::-webkit-scrollbar {
+  width: 4px;
+}
+
+.messageList::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 2px;
+}
 
 /* Empty State */
+
 .emptyState {
-    text-align: center;
-    margin-top: 20vh;
-    color: #666;
-    padding: 0 20px;
+  text-align: center;
+  margin-top: 20vh;
+  color: #666;
+  padding: 0 20px;
 }
+
 .emptyState h1 {
-    font-family: var(--font-cinzel);
-    color: var(--gold-primary);
-    font-size: 1.8rem;
-    margin-bottom: 8px;
+  font-family: var(--font-cinzel);
+  color: var(--gold-primary);
+  font-size: 1.8rem;
+  margin-bottom: 8px;
 }
 
 /* Messages */
-.messageRow { display: flex; width: 100%; animation: fadeUp 0.3s ease; }
-.userRow { justify-content: flex-end; }
-.aiRow { justify-content: flex-start; }
+
+.messageRow {
+  display: flex;
+  width: 100%;
+  animation: fadeUp 0.3s ease;
+}
+
+.userRow {
+  justify-content: flex-end;
+}
+
+.aiRow {
+  justify-content: flex-start;
+}
 
 .bubble {
-    max-width: 85%;
-    line-height: 1.5;
-    font-size: 15px;
+  max-width: 85%;
+  line-height: 1.5;
+  font-size: 15px;
 }
 
 .userBubble {
-    background: rgba(255, 255, 255, 0.08);
-    color: white;
-    padding: 10px 16px;
-    border-radius: 12px 12px 0 12px;
-    border: 1px solid rgba(255,255,255,0.05);
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+  padding: 10px 16px;
+  border-radius: 12px 12px 0 12px;
+  border: 1px solid rgba(255,255,255,0.05);
 }
 
 .aiBubble {
-    padding-left: 12px;
-    border-left: 2px solid var(--gold-primary);
-    color: #ddd;
+  padding-left: 12px;
+  border-left: 2px solid var(--gold-primary);
+  color: #ddd;
 }
 
 .aiName {
-    display: block;
-    color: var(--gold-primary);
-    font-family: var(--font-cinzel);
-    font-size: 12px;
-    margin-bottom: 4px;
-    font-weight: bold;
-    letter-spacing: 0.5px;
+  display: block;
+  color: var(--gold-primary);
+  font-family: var(--font-cinzel);
+  font-size: 12px;
+  margin-bottom: 4px;
+  font-weight: bold;
+  letter-spacing: 0.5px;
 }
 
 .productImage {
-    margin-top: 10px;
-    border: 1px solid #333;
-    border-radius: 6px;
-    max-width: 100%; /* Responsive Image */
-    height: auto;
-    display: block;
+  margin-top: 10px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  max-width: 100%; /* Responsive Image */
+  height: auto;
+  display: block;
 }
 
 /* --- 4. INPUT AREA --- */
+
 .inputContainer {
-    padding: 15px;
-    background: rgba(0,0,0,0.6);
-    border-top: 1px solid var(--glass-border);
+  padding: 15px;
+  background: rgba(0,0,0,0.6);
+  border-top: 1px solid var(--glass-border);
 }
 
 .filePreview {
-    font-size: 11px;
-    color: var(--gold-primary);
-    margin-bottom: 8px;
-    background: rgba(232, 211, 168, 0.1);
-    display: inline-flex;
-    align-items: center;
-    padding: 4px 8px;
-    border-radius: 6px;
+  font-size: 11px;
+  color: var(--gold-primary);
+  margin-bottom: 8px;
+  background: rgba(232, 211, 168, 0.1);
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 6px;
 }
 
 .inputForm {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    background: rgba(255,255,255,0.03);
-    padding: 8px 12px;
-    border-radius: 30px;
-    border: 1px solid rgba(255,255,255,0.1);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  background: rgba(255,255,255,0.03);
+  padding: 8px 12px;
+  border-radius: 30px;
+  border: 1px solid rgba(255,255,255,0.1);
 }
 
 .textInput {
-    flex: 1;
-    background: transparent;
-    border: none;
-    color: white;
-    font-size: 16px;
-    outline: none;
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: white;
+  font-size: 16px;
+  outline: none;
 }
 
 .attachButton {
-    background: none;
-    border: none;
-    color: #666;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
 }
-.attachButton:hover { color: var(--gold-primary); }
+
+.attachButton:hover {
+  color: var(--gold-primary);
+}
 
 .sendButton {
-    background: var(--gold-primary);
-    color: #000;
-    border: none;
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: 0.2s;
+  background: var(--gold-primary);
+  color: #000;
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: 0.2s;
 }
-.sendButton:hover { box-shadow: 0 0 10px var(--gold-glow); }
-.sendButton:disabled { opacity: 0.5; cursor: default; }
+
+.sendButton:hover {
+  box-shadow: 0 0 10px var(--gold-glow);
+}
+
+.sendButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 
 /* --- 5. TICKER (Footer) --- */
+
 .tickerWrap {
-    position: fixed;
-    bottom: 0;
-    width: 100%;
-    height: 80px; /* Smaller height */
-    background: rgba(0,0,0,0.95);
-    border-top: 1px solid var(--glass-border);
-    display: flex;
-    align-items: center;
-    overflow: hidden;
-    z-index: 20;
+  position: fixed;
+  bottom: 0;
+  width: 100%;
+  height: 80px; /* Smaller height */
+  background: rgba(0,0,0,0.95);
+  border-top: 1px solid var(--glass-border);
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  z-index: 20;
 }
 
 .ticker {
-    display: flex;
-    animation: scroll 40s linear infinite;
+  display: flex;
+  animation: scroll 40s linear infinite;
 }
 
 .tickerItem {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-right: 40px;
-    opacity: 0.7;
-    cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: 40px;
+  opacity: 0.7;
+  cursor: pointer;
 }
-.tickerItem:hover { opacity: 1; }
+
+.tickerItem:hover {
+  opacity: 1;
+}
 
 .tickerItem img {
-    width: 45px;
-    height: 45px;
-    object-fit: cover;
-    border: 1px solid #333;
-    border-radius: 4px;
+  width: 45px;
+  height: 45px;
+  object-fit: cover;
+  border: 1px solid #333;
+  border-radius: 4px;
 }
 
 .tickerItem span {
-    font-family: var(--font-cinzel);
-    font-size: 12px;
-    color: var(--gold-primary);
-    white-space: nowrap;
+  font-family: var(--font-cinzel);
+  font-size: 12px;
+  color: var(--gold-primary);
+  white-space: nowrap;
 }
 
 /* --- 6. TOASTS --- */
+
 .toastContainer {
-    position: fixed;
-    top: 60px; /* moved down slightly */
-    right: 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    z-index: 100;
+  position: fixed;
+  top: 60px; /* moved down slightly */
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 100;
 }
 
 .toast {
-    background: rgba(15, 15, 15, 0.95);
-    border-left: 2px solid var(--gold-primary);
-    padding: 12px;
-    width: 260px;
-    border-radius: 4px;
-    box-shadow: -5px 5px 20px rgba(0,0,0,0.5);
-    animation: slideIn 0.5s ease;
+  background: rgba(15, 15, 15, 0.95);
+  border-left: 2px solid var(--gold-primary);
+  padding: 12px;
+  width: 260px;
+  border-radius: 4px;
+  box-shadow: -5px 5px 20px rgba(0,0,0,0.5);
+  animation: slideIn 0.5s ease;
 }
-.toast h4 { color: var(--gold-primary); margin: 0 0 4px 0; font-size: 13px; font-family: var(--font-cinzel);}
-.toast p { font-size: 11px; margin: 0; color: #aaa; }
+
+.toast h4 {
+  color: var(--gold-primary);
+  margin: 0 0 4px 0;
+  font-size: 13px;
+  font-family: var(--font-cinzel);
+}
+
+.toast p {
+  font-size: 11px;
+  margin: 0;
+  color: #aaa;
+}
 
 /* --- ANIMATIONS --- */
+
 @keyframes pulse {
-    0% { box-shadow: 0 0 0 0 var(--gold-glow); }
-    70% { box-shadow: 0 0 0 6px rgba(0,0,0,0); }
-    100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+  0% { box-shadow: 0 0 0 0 var(--gold-glow); }
+  70% { box-shadow: 0 0 0 6px rgba(0,0,0,0); }
+  100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
 }
+
 @keyframes scroll {
-    0% { transform: translateX(0); }
-    100% { transform: translateX(-50%); }
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
 }
+
 @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
+
 @keyframes slideIn {
-    from { opacity: 0; transform: translateX(50px); }
-    to { opacity: 1; transform: translateX(0); }
+  from { opacity: 0; transform: translateX(50px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 /* ------------------------------------------- */
-/* 📱 MOBILE RESPONSIVENESS (The Magic Part)   */
+/* 📱 MOBILE RESPONSIVENESS (The Magic Part) */
 /* ------------------------------------------- */
 
 /* 📱 MOBILE RESPONSIVENESS FIX */
 @media (max-width: 768px) {
-    /* Header: Stack or shrink */
-    .header {
-        padding: 10px 15px;
-        height: 60px; /* Fixed height for calculation */
-    }
-    .brandName { font-size: 16px; }
-    .modeSelect { padding: 6px 10px; font-size: 11px; }
+  /* Header: Stack or shrink */
+  .header {
+    padding: 10px 15px;
+    height: 60px; /* Fixed height for calculation */
+  }
 
-    /* Chat Area: Lift it up so Ticker doesn't cover input */
-    .chatArea {
-        width: 100%;
-        border-radius: 0;
-        border: none;
+  .brandName {
+    font-size: 16px;
+  }
 
-        /* CRITICAL FIX: */
-        /* Use 'dvh' (dynamic viewport height) to handle mobile URL bars */
-        /* Minus 60px (Header) and 70px (Ticker space) */
-        height: calc(100dvh - 130px);
+  .modeSelect {
+    padding: 6px 10px;
+    font-size: 11px;
+  }
 
-        /* Add margin at bottom so it floats ABOVE the ticker */
-        margin: 0 0 70px 0;
-    }
+  /* Chat Area: Lift it up so Ticker doesn't cover input */
+  .chatArea {
+    width: 100%;
+    border-radius: 0;
+    border: none;
 
-    .messageList { padding: 15px; }
-    .bubble { max-width: 88%; font-size: 14px; }
+    /* CRITICAL FIX: */
+    /* Use 'dvh' (dynamic viewport height) to handle mobile URL bars */
+    /* Minus 60px (Header) and 70px (Ticker space) */
+    height: calc(100dvh - 130px);
 
-    /* Input: Make it easier to tap */
-    .inputContainer { padding: 10px; }
+    /* Add margin at bottom so it floats ABOVE the ticker */
+    margin: 0 0 70px 0;
+  }
 
-    .inputForm {
-        padding: 8px 12px;
-        background: rgba(255, 255, 255, 0.08); /* Brighter bg for contrast */
-    }
+  .messageList {
+    padding: 15px;
+  }
 
-    .textInput { font-size: 16px; } /* Prevents iOS zoom on focus */
+  .bubble {
+    max-width: 88%;
+    font-size: 14px;
+  }
 
-    /* SEND BUTTON: Bigger & High Contrast */
-    .sendButton {
-        width: 42px;  /* Bigger touch target */
-        height: 42px;
-        background: var(--gold-primary); /* Solid Gold background */
-        color: #000; /* Black icon */
-        border-radius: 50%;
-        box-shadow: 0 0 10px rgba(0,0,0,0.5);
-    }
+  /* Input: Make it easier to tap */
+  .inputContainer {
+    padding: 10px;
+  }
 
-    /* Ticker: Fixed at bottom */
-    .tickerWrap {
-        height: 60px;
-        bottom: 0; /* Ensure it sticks to bottom */
-        z-index: 50; /* Ensure it stays on top */
-    }
-    .tickerItem img { width: 35px; height: 35px; }
-    .tickerItem span { font-size: 10px; }
+  .inputForm {
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.08); /* Brighter bg for contrast */
+  }
 
-    /* Toasts: Move out of the way */
-    .toastContainer {
-        top: 70px;
-        left: 10px;
-        right: 10px;
-        width: auto;
-    }
+  .textInput {
+    font-size: 16px; /* Prevents iOS zoom on focus */
+  }
+
+  /* SEND BUTTON: Bigger & High Contrast */
+  .sendButton {
+    width: 42px; /* Bigger touch target */
+    height: 42px;
+    background: var(--gold-primary); /* Solid Gold background */
+    color: #000; /* Black icon */
+    border-radius: 50%;
+    box-shadow: 0 0 10px rgba(0,0,0,0.5);
+  }
+
+  /* Ticker: Fixed at bottom */
+  .tickerWrap {
+    height: 60px;
+    bottom: 0; /* Ensure it sticks to bottom */
+    z-index: 50; /* Ensure it stays on top */
+  }
+
+  .tickerItem img {
+    width: 35px;
+    height: 35px;
+  }
+
+  .tickerItem span {
+    font-size: 10px;
+  }
+
+  /* Toasts: Move out of the way */
+  .toastContainer {
+    top: 70px;
+    left: 10px;
+    right: 10px;
+    width: auto;
+  }
+}
+
+/* Desktop Full-Width Fix */
+@media (min-width: 769px) {
+  .chatArea {
+    max-width: 100%;
+    width: 100%;
+    margin: 10px 0 100px 0; /* Remove side auto margins */
+  }
 }
