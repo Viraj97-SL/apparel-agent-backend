@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Enum, Boolean, Text
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text
 from sqlalchemy.orm import relationship, declarative_base
 from sqlalchemy.sql import func
 import uuid
@@ -15,11 +15,11 @@ class Product(Base):
     category = Column(String)
     price = Column(Float)
     description = Column(Text)
-    image_url = Column(String)
+    image_url = Column(Text)  # Changed to Text for long gallery links
     colour = Column(String)
 
     # Relationships
-    inventory = relationship("Inventory", back_populates="product")
+    inventory = relationship("Inventory", back_populates="product", cascade="all, delete-orphan")
 
 
 class Inventory(Base):
@@ -38,7 +38,7 @@ class Customer(Base):
     __tablename__ = "customers"
 
     customer_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    email = Column(String, unique=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=True)  # Made nullable for guest checkout
     full_name = Column(String, nullable=True)
     phone_number = Column(String, nullable=True)
     shipping_address = Column(Text, nullable=True)
@@ -51,15 +51,19 @@ class Customer(Base):
 class Order(Base):
     __tablename__ = "orders"
 
-    order_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))  # e.g. "ORD-123..."
-    customer_id = Column(String, ForeignKey("customers.customer_id"))
-    status = Column(String, default="pending_payment")  # pending, paid, shipped, delivered, returned
+    order_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    # Made Nullable so we can start an order without a customer profile yet
+    customer_id = Column(String, ForeignKey("customers.customer_id"), nullable=True)
+    # Added thread_id to track which chat session this belongs to
+    thread_id = Column(String, index=True, nullable=True)
+
+    status = Column(String, default="Draft")  # Draft, Pending, Paid, Shipped
     total_amount = Column(Float, default=0.0)
     stripe_payment_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     customer = relationship("Customer", back_populates="orders")
-    items = relationship("OrderItem", back_populates="order")
+    items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
 
 
 class OrderItem(Base):
@@ -67,7 +71,8 @@ class OrderItem(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     order_id = Column(String, ForeignKey("orders.order_id"))
-    product_name = Column(String)  # Snapshot of name at time of purchase
+    product_id = Column(Integer, nullable=True)  # Optional link to product ID
+    product_name = Column(String)
     size = Column(String)
     quantity = Column(Integer)
     price_at_purchase = Column(Float)
