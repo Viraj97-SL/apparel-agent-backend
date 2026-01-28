@@ -6,7 +6,7 @@ import styles from './Chat.module.css';
 // --- DATA CONFIGURATION ---
 const CLOUDINARY_BASE = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/";
 
-// ✅ FEATURED PRODUCTS
+// ✅ FEATURED PRODUCTS (Updated)
 const featuredProducts = [
     {
         name: "Wild Bloom Whisper",
@@ -50,7 +50,7 @@ const featuredProducts = [
     }
 ];
 
-// ✅ NEWS & TRENDS
+// ✅ NEWS & TRENDS (Expanded)
 const trends = [
     { title: "Trending", body: "Floral prints are up 20% this week!" },
     { title: "Restock Alert", body: "The Verona Vine is back in Medium." },
@@ -62,8 +62,7 @@ const trends = [
 
 // --- PRODUCT GALLERY COMPONENT ---
 const ProductGallery = ({ imagesStr, alt }) => {
-    // Robust splitter: handles comma, space+comma, or just space if mixed
-    const images = imagesStr ? imagesStr.split(/,\s*/).map(url => url.trim()).filter(url => url.startsWith('http')) : [];
+    const images = imagesStr ? imagesStr.split(',').map(url => url.trim()).filter(url => url.length > 0) : [];
     const [currentIndex, setCurrentIndex] = useState(0);
 
     if (!images || images.length === 0) return null;
@@ -188,53 +187,31 @@ export default function Chat() {
   };
 
   const renderContent = (content) => {
-    // ⚠️ ATOMIC FIX:
-    // Instead of regex matching specific attributes (which fails with extra styles),
-    // we find the entire <img ... /> block, strip it, and parse the raw `src` string from it.
-
-    // 1. Split content by Image Tags
-    // This regex grabs everything from <img up to />
-    const tagRegex = /<img\s+[^>]*>/g;
+    // ⚠️ CRITICAL FIX: Improved Regex to handle extra attributes like 'style="..."'
+    // Matches: <img src="URL" alt="ALT" (anything else) >
+    const imgRegex = /<img src="([^"]*)" alt="([^"]*)"[^>]*>/g;
 
     const parts = [];
     let lastIndex = 0;
     let match;
 
-    while ((match = tagRegex.exec(content)) !== null) {
-        // Push text before the image
-        if (match.index > lastIndex) {
-            parts.push(content.substring(lastIndex, match.index));
-        }
+    while ((match = imgRegex.exec(content)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(content.substring(lastIndex, match.index));
+      }
 
-        const tagString = match[0];
+      // Render Gallery
+      // match[1] = src (comma separated URLs)
+      // match[2] = alt text
+      parts.push(
+          <ProductGallery key={match.index} imagesStr={match[1]} alt={match[2]} />
+      );
 
-        // 2. Extract src (the URL string)
-        // We look for src="..." or src='...'
-        const srcMatch = /src=["']([^"']*)["']/.exec(tagString);
-        const src = srcMatch ? srcMatch[1] : "";
-
-        // 3. Extract alt
-        const altMatch = /alt=["']([^"']*)["']/.exec(tagString);
-        const alt = altMatch ? altMatch[1] : "Product Image";
-
-        if (src) {
-             // Render our Gallery Component with the clean URL string
-             parts.push(
-                <ProductGallery key={match.index} imagesStr={src} alt={alt} />
-            );
-        } else {
-            // Failed to find src, push empty string (hide broken tag)
-             parts.push("");
-        }
-
-        lastIndex = tagRegex.lastIndex;
+      lastIndex = imgRegex.lastIndex;
     }
-
-    // Push remaining text
     if (lastIndex < content.length) {
         parts.push(content.substring(lastIndex));
     }
-
     return parts.length > 0 ? parts : content;
   };
 
