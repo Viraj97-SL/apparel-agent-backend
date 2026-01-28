@@ -3,13 +3,14 @@ import os
 import re
 from sqlalchemy.orm import Session
 from app.database import engine, SessionLocal
-from app.models import Base, Product, Inventory, Order, OrderItem, Customer, Return, RestockNotification  # Added imports
+from app.models import Base, Product, Inventory, Order, OrderItem, Customer, Return, RestockNotification
 
 def init_db():
-    """Creates tables in the database (Postgres or SQLite)."""
-    print("--- Creating Database Tables ---")
+    """Drops and recreates tables to sync schema."""
+    print("--- Dropping and Creating Database Tables ---")
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
-    print("--- Tables Created Successfully ---")
+    print("--- Tables Recreated Successfully ---")
 
 def clean_column_name(col_name):
     """Removes extra spaces and special chars."""
@@ -19,7 +20,7 @@ def populate_initial_data():
     """Reads Excel, handles merged headers AND merged cells, then populates DB."""
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # ⚠️ CHECK: Ensure this matches your actual file name
-    excel_path = os.path.join(base_dir, "Pamorya Stock(1).xlsx")
+    excel_path = os.path.join(base_dir, "Pamorya Stock(1)212.xlsx")
     if os.path.exists(excel_path):
         print(f"Reading Excel file from: {os.path.basename(excel_path)}")
         df_raw = pd.read_excel(excel_path, header=None)
@@ -76,24 +77,6 @@ def populate_initial_data():
         return
 
     db: Session = SessionLocal()
-
-    # --- ⚠️ FORCE-CLEARING SECTION (Now with proper imports and order) ---
-    print("⚠️ Force-Clearing Database for fresh seed...")
-    try:
-        # Delete in dependency order (children first)
-        db.query(OrderItem).delete()  # Child of Order
-        db.query(Order).delete()
-        db.query(Return).delete()  # References Order
-        db.query(Inventory).delete()  # Child of Product
-        db.query(Product).delete()
-        db.query(Customer).delete()
-        db.query(RestockNotification).delete()
-        db.commit()
-        print("✅ Database cleared successfully.")
-    except Exception as e:
-        db.rollback()
-        print(f"❌ Error clearing database: {e}")
-        return
 
     print("⚠️ Seeding data...")
     products_added = 0
