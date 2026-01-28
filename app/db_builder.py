@@ -3,8 +3,7 @@ import os
 import re
 from sqlalchemy.orm import Session
 from app.database import engine, SessionLocal
-from app.models import Base, Product, Inventory
-
+from app.models import Base, Product, Inventory, Order, OrderItem, Customer, Return, RestockNotification  # Added imports
 
 def init_db():
     """Creates tables in the database (Postgres or SQLite)."""
@@ -12,19 +11,15 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     print("--- Tables Created Successfully ---")
 
-
 def clean_column_name(col_name):
     """Removes extra spaces and special chars."""
     return re.sub(r'\s+', ' ', str(col_name)).strip()
 
-
 def populate_initial_data():
     """Reads Excel, handles merged headers AND merged cells, then populates DB."""
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
     # ⚠️ CHECK: Ensure this matches your actual file name
-    excel_path = os.path.join(base_dir, "Pamorya Stock(1)212.xlsx")
-
+    excel_path = os.path.join(base_dir, "Pamorya Stock(1).xlsx")
     if os.path.exists(excel_path):
         print(f"Reading Excel file from: {os.path.basename(excel_path)}")
         df_raw = pd.read_excel(excel_path, header=None)
@@ -42,7 +37,6 @@ def populate_initial_data():
         # --- 1. HANDLE DOUBLE HEADERS ---
         row0 = df_raw.iloc[0].fillna('').astype(str).apply(clean_column_name)
         row1 = df_raw.iloc[1].fillna('').astype(str).apply(clean_column_name)
-
         new_headers = []
         for r0, r1 in zip(row0, row1):
             if r0 and r1 and r0 != r1:
@@ -70,34 +64,29 @@ def populate_initial_data():
                 col_map[col] = "Unit Price (LKR)"
             elif "description" in clean_col:
                 col_map[col] = "Dress description"
-
         df.rename(columns=col_map, inplace=True)
 
         # --- 2. FORWARD FILL MERGED CELLS ---
-        product_cols = [c for c in df.columns if
-                        c in ['Dress Code', 'Dress Name', 'Colour', 'Dress description', 'Unit Price (LKR)',
-                              'image_url']]
+        product_cols = [c for c in df.columns if c in ['Dress Code', 'Dress Name', 'Colour', 'Dress description', 'Unit Price (LKR)', 'image_url']]
         df[product_cols] = df[product_cols].ffill()
-
         if 'Unit Price (LKR)' in df.columns:
             df['Unit Price (LKR)'] = pd.to_numeric(df['Unit Price (LKR)'], errors='coerce').fillna(0)
-
     except Exception as e:
         print(f"❌ Error processing file structure: {e}")
         return
 
     db: Session = SessionLocal()
 
-    # --- ⚠️ CORRECTED CLEARING SECTION ⚠️ ---
+    # --- ⚠️ FORCE-CLEARING SECTION (Now with proper imports and order) ---
     print("⚠️ Force-Clearing Database for fresh seed...")
     try:
-        # Delete dependent tables first (child relationships)
+        # Delete in dependency order (children first)
         db.query(OrderItem).delete()  # Child of Order
         db.query(Order).delete()
+        db.query(Return).delete()  # References Order
         db.query(Inventory).delete()  # Child of Product
         db.query(Product).delete()
         db.query(Customer).delete()
-        db.query(Return).delete()
         db.query(RestockNotification).delete()
         db.commit()
         print("✅ Database cleared successfully.")
@@ -107,7 +96,6 @@ def populate_initial_data():
         return
 
     print("⚠️ Seeding data...")
-
     products_added = 0
     inventory_added = 0
 
@@ -116,14 +104,11 @@ def populate_initial_data():
         return
 
     grouped = df.groupby(['Dress Name', 'Colour'])
-
     for (name, colour), group in grouped:
         first_row = group.iloc[0]
-
         price = first_row.get('Unit Price (LKR)', 0)
         desc = first_row.get('Dress description', '')
         img = first_row.get('image_url', None)
-
         # Ensure image_url is not 'nan' string
         final_img = str(img).strip() if pd.notna(img) and str(img).lower() != 'nan' else None
 
@@ -142,7 +127,6 @@ def populate_initial_data():
         for _, row in group.iterrows():
             size = row.get('Quantity Size', row.get('Size', 'Standard'))
             qty = row.get('Quantity for each', 0)
-
             if pd.notna(size) and str(size).strip() != "":
                 inv_item = Inventory(
                     product_id=new_product.product_id,
@@ -155,7 +139,6 @@ def populate_initial_data():
     db.commit()
     print(f"✅ Success! Added {products_added} products and {inventory_added} inventory items.")
     db.close()
-
 
 if __name__ == "__main__":
     init_db()
