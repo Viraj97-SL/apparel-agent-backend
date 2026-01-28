@@ -3,39 +3,42 @@ import os
 import re
 from sqlalchemy.orm import Session
 from app.database import engine, SessionLocal
-from app.models import Base, Product, Inventory, Order, OrderItem, Customer, Return, RestockNotification
+from app.models import Base, Product, Inventory, Order, OrderItem, Customer
+
 
 def init_db():
     """Drops and recreates tables to sync schema."""
-    print("--- Dropping and Creating Database Tables ---")
+    print("--- ⚠️ Dropping and Recreating Database Tables ---")
+    # This deletes the old tables so the new columns (like thread_id) can be created
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
-    print("--- Tables Recreated Successfully ---")
+    print("--- ✅ Tables Recreated Successfully ---")
+
 
 def clean_column_name(col_name):
     """Removes extra spaces and special chars."""
     return re.sub(r'\s+', ' ', str(col_name)).strip()
 
+
 def populate_initial_data():
-    """Reads Excel, handles merged headers AND merged cells, then populates DB."""
+    """Reads Excel and populates DB."""
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # ⚠️ CHECK: Ensure this matches your actual file name
     excel_path = os.path.join(base_dir, "Pamorya Stock(1)212.xlsx")
-    if os.path.exists(excel_path):
-        print(f"Reading Excel file from: {os.path.basename(excel_path)}")
-        df_raw = pd.read_excel(excel_path, header=None)
-    else:
-        # Fallback to the old name just in case
+
+    # Fallback checks
+    if not os.path.exists(excel_path):
         old_path = os.path.join(base_dir, "Pamorya Stock(1).xlsx")
         if os.path.exists(old_path):
-            print(f"Reading Excel file from: {os.path.basename(old_path)}")
-            df_raw = pd.read_excel(old_path, header=None)
+            excel_path = old_path
         else:
             print(f"❌ No data file found. Please upload 'Pamorya Stock(1)212.xlsx'.")
             return
 
+    print(f"Reading Excel file from: {os.path.basename(excel_path)}")
     try:
-        # --- 1. HANDLE DOUBLE HEADERS ---
+        df_raw = pd.read_excel(excel_path, header=None)
+
+        # --- HANDLE HEADERS ---
         row0 = df_raw.iloc[0].fillna('').astype(str).apply(clean_column_name)
         row1 = df_raw.iloc[1].fillna('').astype(str).apply(clean_column_name)
         new_headers = []
@@ -67,13 +70,16 @@ def populate_initial_data():
                 col_map[col] = "Dress description"
         df.rename(columns=col_map, inplace=True)
 
-        # --- 2. FORWARD FILL MERGED CELLS ---
-        product_cols = [c for c in df.columns if c in ['Dress Code', 'Dress Name', 'Colour', 'Dress description', 'Unit Price (LKR)', 'image_url']]
+        # --- FILL MERGED CELLS ---
+        product_cols = [c for c in df.columns if
+                        c in ['Dress Code', 'Dress Name', 'Colour', 'Dress description', 'Unit Price (LKR)',
+                              'image_url']]
         df[product_cols] = df[product_cols].ffill()
         if 'Unit Price (LKR)' in df.columns:
             df['Unit Price (LKR)'] = pd.to_numeric(df['Unit Price (LKR)'], errors='coerce').fillna(0)
+
     except Exception as e:
-        print(f"❌ Error processing file structure: {e}")
+        print(f"❌ Error processing file: {e}")
         return
 
     db: Session = SessionLocal()
@@ -92,7 +98,6 @@ def populate_initial_data():
         price = first_row.get('Unit Price (LKR)', 0)
         desc = first_row.get('Dress description', '')
         img = first_row.get('image_url', None)
-        # Ensure image_url is not 'nan' string
         final_img = str(img).strip() if pd.notna(img) and str(img).lower() != 'nan' else None
 
         new_product = Product(
@@ -123,6 +128,8 @@ def populate_initial_data():
     print(f"✅ Success! Added {products_added} products and {inventory_added} inventory items.")
     db.close()
 
+
 if __name__ == "__main__":
+    # This MUST run to fix your database schema
     init_db()
     populate_initial_data()

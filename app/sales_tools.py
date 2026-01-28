@@ -2,16 +2,14 @@ from langchain_core.tools import tool
 from app.database import SessionLocal
 from app.models import Product, Order, OrderItem, Customer
 
-
 @tool
 def create_draft_order(product_name: str, size: str, quantity: int, thread_id: str = "guest_user"):
     """
     Adds an item to the user's draft order.
-    Matches your complex schema (Order -> OrderItems).
     """
     session = SessionLocal()
     try:
-        # 1. Find Product Price
+        # 1. Find Product
         product = session.query(Product).filter(Product.product_name.ilike(f"%{product_name}%")).first()
         if not product:
             return f"Error: Product '{product_name}' not found."
@@ -19,15 +17,14 @@ def create_draft_order(product_name: str, size: str, quantity: int, thread_id: s
         price = float(product.price)
         total_item_price = price * int(quantity)
 
-        # 2. Ensure a "Ghost" Customer exists for this Thread ID
-        # (We use thread_id as customer_id temporarily so we don't break the Foreign Key)
+        # 2. Ensure Customer (Guest) exists
         customer = session.query(Customer).filter(Customer.customer_id == thread_id).first()
         if not customer:
             customer = Customer(customer_id=thread_id, full_name="Guest")
             session.add(customer)
             session.flush()
 
-        # 3. Find or Create PENDING Order
+        # 3. Find or Create Draft Order
         order = session.query(Order).filter(
             Order.customer_id == thread_id,
             Order.status == "pending_payment"
@@ -36,13 +33,14 @@ def create_draft_order(product_name: str, size: str, quantity: int, thread_id: s
         if not order:
             order = Order(
                 customer_id=thread_id,
+                thread_id=thread_id,  # ✅ Populate the new column
                 status="pending_payment",
                 total_amount=0.0
             )
             session.add(order)
-            session.flush()  # Generate Order ID (UUID)
+            session.flush()
 
-        # 4. Add Item to Order (Using your OrderItem table)
+        # 4. Add Item
         new_item = OrderItem(
             order_id=order.order_id,
             product_name=product.product_name,
@@ -68,7 +66,6 @@ def create_draft_order(product_name: str, size: str, quantity: int, thread_id: s
     finally:
         session.close()
 
-
 @tool
 def confirm_order_details(customer_name: str, address: str, phone: str, thread_id: str = "guest_user"):
     """
@@ -76,7 +73,7 @@ def confirm_order_details(customer_name: str, address: str, phone: str, thread_i
     """
     session = SessionLocal()
     try:
-        # 1. Find the Customer (using thread_id)
+        # 1. Find Customer
         customer = session.query(Customer).filter(Customer.customer_id == thread_id).first()
         if not customer:
             return "Error: No customer record found. Create an order first."
@@ -86,7 +83,7 @@ def confirm_order_details(customer_name: str, address: str, phone: str, thread_i
         customer.shipping_address = address
         customer.phone_number = phone
 
-        # 3. Mark Order as Confirmed (or whatever status you prefer)
+        # 3. Confirm Order
         order = session.query(Order).filter(
             Order.customer_id == thread_id,
             Order.status == "pending_payment"
