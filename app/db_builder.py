@@ -135,5 +135,7 @@ def populate_initial_data():
 
 
 if __name__ == "__main__":
-    init_db()
-    populate_initial_data()
+    # 🛑 CRITICAL: Do NOT uncomment these unless you want to WIPE all data.
+    # init_db()
+    # populate_initial_data()
+    pass
