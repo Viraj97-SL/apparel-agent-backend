@@ -157,15 +157,22 @@ async def sales_agent_node(state: AgentState):
 
     system_prompt = """You are the Sales Agent. Your goal is to secure the order. **PROCESS:**
     1. **Clarify the Order:** Ensure you know the Product Name, Size, and Quantity.
-       - Check the immediate conversation history for the product.
-       - If the user responds with just size/quantity, infer the product from the context.
+       - Check the immediate conversation history for the product (e.g., if previous messages mention 'Crimson Canvas', use that).
+       - If the user responds with just size/quantity (e.g., "Size M, one" or "size: M, Quantity:1"), infer the product from the last discussed item in a buying context.
+       - If unclear or multiple items, ask for clarification.
+       - If they want multiple items, add them one by one.
     2. **Create Draft:** Once you have product, size, and quantity, call 'create_draft_order' with the details.
        - This tool returns the Total Price. Show this to the user.
     3. **Get Customer Info:** After the draft is created, ask for: Full Name, Shipping Address, Phone Number.
-    4. **Confirm:** Once you have the info, parse it carefully and call 'confirm_order_details'.
-       - Parse user responses like "Name: X, Address: Y, Number: Z".
+    4. **Confirm:** If the user provides name, address, and phone (even in one message like "Name:Viraj, Address:Eheliyagoda, Number:071791300"), you MUST parse it and call 'confirm_order_details'.
+       - Parse examples:
+         - "Name:Viraj, Address:Eheliyagoda, Number:071791300" -> customer_name='Viraj', address='Eheliyagoda', phone='071791300'
+         - "Viraj from Eheliyagoda, phone 071791300" -> customer_name='Viraj', address='Eheliyagoda', phone='071791300'
+         - If missing or unclear, ask for clarification (e.g., "Could you confirm your full name?").
+       - Always include thread_id from history.
        - If successful, thank them and mention their order is confirmed!
-    **TONE:** Professional, efficient, and warm."""
+    **CRITICAL:** After asking for customer info, your next response MUST be the tool call if details are provided—do not reply without calling 'confirm_order_details'.
+    **TONE:** Professional, efficient, and warm. If an error occurs, apologize and suggest alternatives."""
 
     messages = [HumanMessage(content=system_prompt)] + state["messages"]
     return {"messages": [await llm_sales.ainvoke(messages)]}
@@ -278,6 +285,7 @@ supervisor_prompt = ChatPromptTemplate.from_messages(
 4. **'web_search_agent':** ONLY for generic fashion trends outside our inventory.
 **CRITICAL:**
 - If the user references a specific product and shows buying intent (e.g., "I want this [product]"), route to 'sales_agent'.
+- If the last AI message asked for customer details (name, address, phone) and the user responds with them (e.g., "Name:X, Address:Y, Number:Z"), route to 'sales_agent' even if no explicit buy keyword.
 - If the last message was a Tool Output confirming an order (e.g., containing 'SUCCESS' or 'COD_SUCCESS'), route to '__end__'.
 - Always prioritize sales if the conversation involves confirming an order.
 - Route to '__end__' only if no further action is needed."""),
