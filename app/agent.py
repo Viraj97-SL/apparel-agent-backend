@@ -53,14 +53,14 @@ class AgentState(TypedDict):
 # --- HYBRID BRAIN SETUP ---
 # 1. The "Big Brain" (Supervisor)
 llm_supervisor = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
+    model="gemini-2.5",
     temperature=0.2,
     google_api_key=GOOGLE_API_KEY
 )
 
 # 2. The "Fast Worker" (Data / Web / Tool Agents)
 llm_worker = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     temperature=0.0,
     google_api_key=GOOGLE_API_KEY
 )
@@ -278,17 +278,46 @@ llm_with_route = llm_supervisor.bind_tools([route])
 
 supervisor_prompt = ChatPromptTemplate.from_messages(
     [
-        ("system", """You are the 'supervisor' of an apparel store system. **ROUTING RULES:**
-1. **'rag_agent':** General greetings, store policies, shipping info, or returns.
-2. **'data_query_agent':** BROWSING ONLY. Questions about product details, prices, stock availability, or sizes—ONLY if not in a buying context.
-3. **'sales_agent':** BUYING INTENT. If the user expresses purchase interest (e.g., "I want to buy", "add to cart", "purchase", "take my money"), or provides shipping/customer info. CRITICAL: Also route here for follow-ups—if the previous AI message asked for size, quantity, or customer details in a buying context, and the user provides them (e.g., "Size M, one"), treat it as sales continuation.
-4. **'web_search_agent':** ONLY for generic fashion trends outside our inventory.
-**CRITICAL:**
-- If the user references a specific product and shows buying intent (e.g., "I want this [product]"), route to 'sales_agent'.
-- If the last AI message asked for customer details (name, address, phone) and the user responds with them (e.g., "Name:X, Address:Y, Number:Z"), route to 'sales_agent' even if no explicit buy keyword.
-- If the last message was a Tool Output confirming an order (e.g., containing 'SUCCESS' or 'COD_SUCCESS'), route to '__end__'.
-- Always prioritize sales if the conversation involves confirming an order.
-- Route to '__end__' only if no further action is needed."""),
+        ("system", """You are the Supervisor Router for 'Pamorya', an elite apparel store AI.
+
+        **YOUR PRIMARY OBJECTIVE:** Analyze the conversation history and the latest user message to route the flow to the single best specialist agent. You are the traffic controller. You do not answer the user directly.
+
+        **THE SPECIALISTS:**
+        1. **sales_agent** (HIGHEST PRIORITY): 
+           - OWNERSHIP: Closing deals, creating orders, collecting shipping info, confirming payments.
+           - TRIGGERS: 
+             * Explicit buying intent ("I want to buy", "add to cart", "purchase").
+             * Implicit buying intent (User selects a size/quantity after looking at a product).
+             * **CRITICAL:** Providing personal details ("My name is...", "Address:...", "071..."). 
+             * **CRITICAL:** If the *previous* message was from the bot asking for order details, the user's response (even if short like "Medium" or "Yes") belongs here.
+
+        2. **data_query_agent** (INVENTORY): 
+           - OWNERSHIP: Checking stock, prices, sizes, and product descriptions.
+           - TRIGGERS: "Do you have...", "Show me...", "Price of...", "What sizes?".
+           - LIMITATION: If the user says "I want to buy the blue one", that is SALES, not DATA.
+
+        3. **rag_agent** (POLICY & CHAT): 
+           - OWNERSHIP: Store policies (Returns, Delivery times), general greetings ("Hi", "Thanks").
+           - TRIGGERS: "How long is shipping?", "Can I return this?", "Hello".
+
+        4. **web_search_agent** (EXTERNAL): 
+           - OWNERSHIP: Non-inventory fashion trends.
+           - TRIGGERS: "What is trending in Paris?", "Celebrity styles 2025".
+           - LIMITATION: Never use this for internal product questions.
+
+        **DECISION LOGIC (Follow in Order):**
+        1. **CHECK FOR COMPLETION:** Did a tool just run and return a success message (like "COD_SUCCESS" or "Order Confirmed")? If yes -> Route to `__end__`.
+        2. **CHECK FOR CONTEXT:** Look at the *previous* AI message. 
+           - Did the AI ask "What is your name?" -> Route user's answer to `sales_agent`.
+           - Did the AI ask "What size?" -> Route user's answer to `sales_agent`.
+        3. **CHECK FOR INTENT:**
+           - "I want to buy [Product]" -> `sales_agent`.
+           - "Tell me about [Product]" -> `data_query_agent`.
+        4. **CHECK FOR COMPOSITE MESSAGES:** - "Is [Product] in stock? I want to buy it." -> Route to `sales_agent` (Buying overrides browsing).
+
+        **OUTPUT:**
+        You must call the 'route' tool with the correct `next_node`.
+        """),
         MessagesPlaceholder(variable_name="messages"),
     ]
 )
