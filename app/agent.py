@@ -22,6 +22,8 @@ import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 # For supervisor tool-calling
 from langchain_core.tools import tool
+# 🟢 NEW IMPORT: Required for threading
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 import nest_asyncio
 
@@ -51,7 +53,7 @@ class AgentState(TypedDict):
 # --- HYBRID BRAIN SETUP ---
 # 1. The "Big Brain" (Supervisor)
 llm_supervisor = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",  # Or gemini-1.5-pro
+    model="gemini-2.0-flash",
     temperature=0.2,
     google_api_key=GOOGLE_API_KEY
 )
@@ -155,29 +157,32 @@ async def sales_agent_node(state: AgentState):
 
     system_prompt = """You are the Sales Agent. Your goal is to secure the order. **PROCESS:**
     1. **Clarify the Order:** Ensure you know the Product Name, Size, and Quantity.
-       - Check the immediate conversation history for the product (e.g., if previous messages mention 'Verona Vine', use that).
-       - If the user responds with just size/quantity (e.g., "Size M, one" or "size: M, Quantity:1"), infer the product from the last discussed item in a buying context.
-       - If unclear or multiple items, ask for clarification.
-       - If they want multiple items, add them one by one.
+       - Check the immediate conversation history for the product.
+       - If the user responds with just size/quantity, infer the product from the context.
     2. **Create Draft:** Once you have product, size, and quantity, call 'create_draft_order' with the details.
        - This tool returns the Total Price. Show this to the user.
     3. **Get Customer Info:** After the draft is created, ask for: Full Name, Shipping Address, Phone Number.
     4. **Confirm:** Once you have the info, parse it carefully and call 'confirm_order_details'.
-       - Parse user responses like "Name: X, Address: Y, Number: Z" or similar formats—extract customer_name (e.g., 'Viraj'), address (e.g., 'Eheliyagoda'), phone (e.g., '071791300').
-       - If the format is unclear, ask for clarification (e.g., "Could you provide your full name, shipping address, and phone number separately?").
+       - Parse user responses like "Name: X, Address: Y, Number: Z".
        - If successful, thank them and mention their order is confirmed!
-    **TONE:** Professional, efficient, and warm. If an error occurs (e.g., product not found), apologize and suggest alternatives."""
+    **TONE:** Professional, efficient, and warm."""
 
     messages = [HumanMessage(content=system_prompt)] + state["messages"]
     return {"messages": [await llm_sales.ainvoke(messages)]}
 
 
-async def data_query_tool_executor_node(state: AgentState):
-    """Executes BOTH Data Query and Sales tools."""
+# 🟢 CRITICAL FIX: Added 'config' parameter to capture Thread ID
+async def data_query_tool_executor_node(state: AgentState, config: RunnableConfig):
+    """Executes BOTH Data Query and Sales tools with Thread ID injection."""
     print("\n--- Calling Data/Sales Tool Executor ---")
     messages = state["messages"]
     last_message = messages[-1]
     tool_messages = []
+
+    # Extract the thread_id from the LangGraph config
+    # This ID is unique to the user's browser session
+    thread_id = config.get("configurable", {}).get("thread_id", "guest_user")
+    print(f"DEBUG: Using Thread ID for Database: {thread_id}")
 
     if not last_message.tool_calls:
         return {"messages": []}
@@ -186,6 +191,12 @@ async def data_query_tool_executor_node(state: AgentState):
     for tool_call in last_message.tool_calls:
         tool_name = tool_call["name"]
         tool_args = tool_call["args"]
+
+        # 🟢 INJECT THREAD ID:
+        # If the tool is a sales tool, pass the thread_id so the DB knows who this is
+        if tool_name in ["create_draft_order", "confirm_order_details"]:
+            tool_args["thread_id"] = thread_id
+
         print(f" -> Preparing tool: {tool_name} with args {tool_args}")
 
         # Look up tool in the master dictionary
@@ -198,7 +209,6 @@ async def data_query_tool_executor_node(state: AgentState):
             if asyncio.iscoroutinefunction(tool_to_call.invoke) or hasattr(tool_to_call, 'ainvoke'):
                 tasks.append((tool_call["id"], tool_to_call.ainvoke(tool_args)))
             else:
-                # Wrap sync tool in a dummy async result for uniform handling
                 tasks.append((tool_call["id"], tool_to_call.invoke(tool_args)))
 
     # Execute tasks
@@ -269,7 +279,7 @@ supervisor_prompt = ChatPromptTemplate.from_messages(
 **CRITICAL:**
 - If the user references a specific product and shows buying intent (e.g., "I want this [product]"), route to 'sales_agent'.
 - If the last message was a Tool Output confirming an order (e.g., containing 'SUCCESS' or 'COD_SUCCESS'), route to '__end__'.
-- Always prioritize sales if the conversation involves confirming an order—err on the side of 'sales_agent' for ambiguous size/quantity responses after a purchase prompt.
+- Always prioritize sales if the conversation involves confirming an order.
 - Route to '__end__' only if no further action is needed."""),
         MessagesPlaceholder(variable_name="messages"),
     ]
