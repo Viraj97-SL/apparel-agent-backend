@@ -53,7 +53,7 @@ class AgentState(TypedDict):
 # --- HYBRID BRAIN SETUP ---
 # 1. The "Big Brain" (Supervisor)
 llm_supervisor = ChatGoogleGenerativeAI(
-    model="gemini-2.5-Pro",
+    model="gemini-2.5-pro",
     temperature=0.2,
     google_api_key=GOOGLE_API_KEY
 )
