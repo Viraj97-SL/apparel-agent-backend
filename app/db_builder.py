@@ -9,7 +9,7 @@ from app.models import Base, Product, Inventory
 def init_db():
     """
     Creates tables ONLY if they don't exist.
-    Does NOT drop tables, so data is safe on restart.
+    NEVER drops tables. Data is safe.
     """
     inspector = inspect(engine)
     if not inspector.has_table("products"):
@@ -18,7 +18,7 @@ def init_db():
         print("--- ✅ Tables Created Successfully ---")
         return True
     else:
-        print("--- 🔄 Database exists. Skipping creation to protect data. ---")
+        print("--- 🔄 Database tables exist. Skipping creation to protect data. ---")
         return False
 
 
@@ -37,23 +37,18 @@ def populate_initial_data():
 
         print("--- ⚠️ Seeding Initial Data from Excel... ---")
 
-        # Path Handling
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         excel_path = os.path.join(base_dir, "Pamorya Stock(1)212.xlsx")
 
-        # Fallback for file name
         if not os.path.exists(excel_path):
-            alt_path = os.path.join(base_dir, "Pamorya Stock(1).xlsx")
-            if os.path.exists(alt_path):
-                excel_path = alt_path
-            else:
+            # Fallback
+            excel_path = os.path.join(base_dir, "Pamorya Stock(1).xlsx")
+            if not os.path.exists(excel_path):
                 print("❌ No Excel file found. Skipping seed.")
                 return
 
-        # Read Excel
         df_raw = pd.read_excel(excel_path, header=None)
 
-        # Header Cleanup logic (same as before)
         row0 = df_raw.iloc[0].fillna('').astype(str).apply(clean_column_name)
         row1 = df_raw.iloc[1].fillna('').astype(str).apply(clean_column_name)
         new_headers = []
@@ -65,7 +60,6 @@ def populate_initial_data():
         df.columns = new_headers
         df.reset_index(drop=True, inplace=True)
 
-        # Mapping
         col_map = {}
         for col in df.columns:
             c = col.lower()
@@ -88,14 +82,7 @@ def populate_initial_data():
         if 'Unit Price (LKR)' in df.columns:
             df['Unit Price (LKR)'] = pd.to_numeric(df['Unit Price (LKR)'], errors='coerce').fillna(0)
 
-        # Insert Data
-        if 'Dress Name' not in df.columns:
-            print("❌ 'Dress Name' column missing.")
-            return
-
         grouped = df.groupby(['Dress Name', 'Colour'])
-        count_p, count_i = 0, 0
-
         for (name, colour), group in grouped:
             row = group.iloc[0]
             price = row.get('Unit Price (LKR)', 0)
@@ -113,7 +100,6 @@ def populate_initial_data():
             )
             db.add(prod)
             db.flush()
-            count_p += 1
 
             for _, r in group.iterrows():
                 size = r.get('Quantity Size', r.get('Size', 'Standard'))
@@ -125,10 +111,9 @@ def populate_initial_data():
                         stock_quantity=int(qty) if pd.notna(qty) else 0
                     )
                     db.add(inv)
-                    count_i += 1
 
         db.commit()
-        print(f"✅ Seeding Complete: {count_p} Products, {count_i} Inventory Items.")
+        print(f"✅ Seeding Complete.")
 
     except Exception as e:
         print(f"❌ Seeding Error: {e}")
@@ -138,8 +123,6 @@ def populate_initial_data():
 
 
 if __name__ == "__main__":
-    # This logic is now safe to run on every startup
-    # It only acts if the DB is empty.
     is_new = init_db()
     if is_new:
         populate_initial_data()
