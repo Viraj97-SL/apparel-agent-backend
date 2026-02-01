@@ -1,148 +1,191 @@
 import pandas as pd
 import os
 import re
-from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import inspect
 from app.database import engine, SessionLocal
-from app.models import Base, Product, Inventory, Order, OrderItem, Customer, Return, RestockNotification
+from app.models import Base, Product, Inventory
+
+
+
 
 def init_db():
-    """Deletes data, drops, and recreates tables to sync schema, with fallback ALTER."""
-    db = SessionLocal()
-    print("--- Clearing Data in Dependency Order ---")
-    try:
-        # Delete children first to avoid FK errors
-        db.query(OrderItem).delete()
-        db.query(Return).delete()
-        db.query(Order).delete()
-        db.query(Inventory).delete()
-        db.query(RestockNotification).delete()
-        db.query(Product).delete()
-        db.query(Customer).delete()
-        db.commit()
-        print("✅ Data cleared successfully.")
-    except Exception as e:
-        db.rollback()
-        print(f"❌ Error clearing data: {e}")
-    finally:
-        db.close()
+    """
+    Creates tables ONLY if they don't exist.
+    Does NOT drop tables. Data is safe.
+    """
+    inspector = inspect(engine)
+    if not inspector.has_table("products"):
+        print("--- 🆕 New Database Detected. Creating Tables... ---")
+        Base.metadata.create_all(bind=engine)
+        return True
+    return False
 
-    print("--- Dropping and Creating Tables ---")
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    print("--- Tables Recreated Successfully ---")
-
-    # Fallback ALTER for thread_id
-    db = SessionLocal()
-    try:
-        db.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS thread_id VARCHAR;"))
-        db.execute(text("CREATE INDEX IF NOT EXISTS idx_orders_thread_id ON orders (thread_id);"))
-        db.commit()
-        print("✅ Ensured thread_id column exists.")
-    except Exception as e:
-        db.rollback()
-        print(f"❌ Error ensuring column: {e}")
-    finally:
-        db.close()
 
 def clean_column_name(col_name):
     return re.sub(r'\s+', ' ', str(col_name)).strip()
 
-def populate_initial_data():
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    excel_path = os.path.join(base_dir, "Pamorya Stock(1)212.xlsx")
-    if os.path.exists(excel_path):
-        print(f"Reading Excel file from: {os.path.basename(excel_path)}")
-        df_raw = pd.read_excel(excel_path, header=None)
+
+def clean_prefix(value, prefix):
+    """Removes accidental prefixes like 'Dress Name Wild Bloom...'"""
+    val_str = str(value).strip()
+    if val_str.lower().startswith(prefix.lower()):
+        # Remove the prefix and any leading spaces/colons
+        return re.sub(f"^{re.escape(prefix)}[:\s]*", "", val_str, flags=re.IGNORECASE)
+    return val_str
+
+
+def is_sold_out(row):
+    """Scans row for 'sold out' text."""
+    for val in row.values:
+        if isinstance(val, str) and "sold out" in val.lower():
+            return True
+    return False
+
+
+def upsert_product(db, name, category, price, desc, img, colour, size, qty):
+    # Check if Product Exists
+    existing_prod = db.query(Product).filter(
+        Product.product_name == name,
+        Product.colour == colour
+    ).first()
+
+    if existing_prod:
+        # Update existing product details
+        existing_prod.price = price
+        existing_prod.description = desc
+        if img: existing_prod.image_url = img
+        prod_id = existing_prod.product_id
     else:
-        old_path = os.path.join(base_dir, "Pamorya Stock(1).xlsx")
-        if os.path.exists(old_path):
-            print(f"Reading Excel file from: {os.path.basename(old_path)}")
-            df_raw = pd.read_excel(old_path, header=None)
+        # Create new product
+        new_prod = Product(
+            product_name=name, category=category, price=price,
+            description=desc, image_url=img, colour=colour
+        )
+        db.add(new_prod)
+        db.flush()
+        prod_id = new_prod.product_id
+
+    # Handle Inventory (Upsert)
+    if pd.notna(size) and str(size).strip():
+        clean_size = str(size).strip()
+        inv = db.query(Inventory).filter(Inventory.product_id == prod_id, Inventory.size == clean_size).first()
+        if inv:
+            inv.stock_quantity = qty
         else:
-            print(f"❌ No data file found.")
-            return
+            db.add(Inventory(product_id=prod_id, size=clean_size, stock_quantity=qty))
 
+
+def update_or_create_data():
+    db = SessionLocal()
     try:
-        row0 = df_raw.iloc[0].fillna('').astype(str).apply(clean_column_name)
-        row1 = df_raw.iloc[1].fillna('').astype(str).apply(clean_column_name)
-        new_headers = []
-        for r0, r1 in zip(row0, row1):
-            combined = f"{r0} {r1}" if r0 and r1 and r0 != r1 else r1 or r0
-            new_headers.append(combined)
+        # 1. Run Image Linker (Optional but recommended to keep sync)
+        #print("--- 🖼️ Syncing Images from Cloudinary... ---")
+        #try:
+        #    auto_link_images()
+        #except Exception as e:
+        #    print(f"⚠️ Image Link skipped (Using Excel data): {e}")
 
-        df = df_raw.iloc[2:].copy()
-        df.columns = new_headers
-        df.reset_index(drop=True, inplace=True)
+        # 2. Read Excel
+        print("--- 📊 Reading Excel for Database Sync... ---")
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+        # Look for the file you uploaded (or the renamed version)
+        excel_path = os.path.join(base_dir, "Pamorya_Stock.xlsx")
+        if not os.path.exists(excel_path):
+            # Fallback to the (1) version if you haven't renamed it yet
+            excel_path = os.path.join(base_dir, "Pamorya_Stock(1).xlsx")
+            if not os.path.exists(excel_path):
+                print("❌ No Excel file found.")
+                return
+
+        print(f"--- 📂 Processing: {os.path.basename(excel_path)} ---")
+        df = pd.read_excel(excel_path)
+
+        # Handle Double Header vs Single Header automatically
+        # If the file is raw, "Dress Name" won't be in the first row columns
+        if "Dress Name" not in df.columns:
+            # Reload as raw to clean headers
+            df_raw = pd.read_excel(excel_path, header=None)
+            row0 = df_raw.iloc[0].fillna('').astype(str).apply(clean_column_name)
+            row1 = df_raw.iloc[1].fillna('').astype(str).apply(clean_column_name)
+            new_headers = [f"{r0} {r1}" if (r0 and r1 and r0 != r1) else (r1 if r1 else r0) for r0, r1 in
+                           zip(row0, row1)]
+            df = df_raw.iloc[2:].copy()
+            df.columns = new_headers
+
+        # Mapping Columns
         col_map = {}
         for col in df.columns:
-            clean_col = col.lower()
-            if "size" in clean_col and "quantity" in clean_col:
+            c = col.lower()
+            if "size" in c and "quantity" in c:
                 col_map[col] = "Quantity Size"
-            elif "quantity" in clean_col and "each" in clean_col:
+            elif "quantity" in c:
                 col_map[col] = "Quantity for each"
-            elif "image" in clean_col and "url" in clean_col:
+            elif "image" in c:
                 col_map[col] = "image_url"
-            elif "price" in clean_col and "lkr" in clean_col:
+            elif "unit price" in c:
                 col_map[col] = "Unit Price (LKR)"
-            elif "description" in clean_col:
+            elif "full set" in c or "set price" in c:
+                col_map[col] = "Full set Price"
+            elif "description" in c:
                 col_map[col] = "Dress description"
         df.rename(columns=col_map, inplace=True)
 
-        product_cols = [c for c in df.columns if c in ['Dress Code', 'Dress Name', 'Colour', 'Dress description', 'Unit Price (LKR)', 'image_url']]
-        df[product_cols] = df[product_cols].ffill()
-        if 'Unit Price (LKR)' in df.columns:
-            df['Unit Price (LKR)'] = pd.to_numeric(df['Unit Price (LKR)'], errors='coerce').fillna(0)
+        # Forward Fill
+        fill_cols = [c for c in df.columns if
+                     c in ['Dress Code', 'Dress Name', 'Colour', 'Dress description', 'Unit Price (LKR)',
+                           'Full set Price', 'image_url']]
+        df[fill_cols] = df[fill_cols].ffill()
+
+        # Process Rows
+        grouped = df.groupby(['Dress Name', 'Colour'])
+        for (name, colour), group in grouped:
+            name = str(name).strip()
+            colour = str(colour).strip()
+            first = group.iloc[0]
+
+            # --- CLEANING DATA ---
+            # Removes "Dress Name " or "Colour " prefixes if present
+            name = clean_prefix(name, "Dress Name")
+            colour = clean_prefix(colour, "Colour")
+            desc = clean_prefix(str(first.get('Dress description', '')), "Dress description")
+
+            img = first.get('image_url', None)
+
+            # SOLD OUT LOGIC
+            is_sold = any(is_sold_out(r) for _, r in group.iterrows())
+
+            # 1. INDIVIDUAL ITEM
+            u_price = pd.to_numeric(first.get('Unit Price (LKR)'), errors='coerce')
+            if u_price > 0:
+                upsert_product(db, name, "Individual", float(u_price), desc, img, colour, None, 0)
+                # Inventory
+                for _, r in group.iterrows():
+                    qty = 0 if is_sold else int(r.get('Quantity for each', 0) or 0)
+                    upsert_product(db, name, "Individual", float(u_price), desc, img, colour, r.get('Quantity Size'),
+                                   qty)
+
+            # 2. SET BUNDLE (Handles the Set Price logic)
+            s_price = pd.to_numeric(first.get('Full set Price'), errors='coerce')
+            if s_price > 0:
+                b_name = f"{name} - Full Set"
+                # Smart description update
+                b_desc = f"{desc}\n(This is a complete set including all matching pieces.)"
+
+                upsert_product(db, b_name, "Set", float(s_price), b_desc, img, colour, None, 0)
+                for _, r in group.iterrows():
+                    qty = 0 if is_sold else int(r.get('Quantity for each', 0) or 0)
+                    upsert_product(db, b_name, "Set", float(s_price), b_desc, img, colour, r.get('Quantity Size'), qty)
+
+        db.commit()
+        print("✅ Database Sync Complete.")
     except Exception as e:
-        print(f"❌ Error processing file: {e}")
-        return
+        print(f"❌ DB Sync Error: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
-    db = SessionLocal()
-    print("⚠️ Seeding data...")
-    products_added = 0
-    inventory_added = 0
-
-    if 'Dress Name' not in df.columns:
-        print("❌ 'Dress Name' column not found.")
-        return
-
-    grouped = df.groupby(['Dress Name', 'Colour'])
-    for (name, colour), group in grouped:
-        first_row = group.iloc[0]
-        price = first_row.get('Unit Price (LKR)', 0)
-        desc = first_row.get('Dress description', '')
-        img = first_row.get('image_url', None)
-        final_img = str(img).strip() if pd.notna(img) and str(img).lower() != 'nan' else None
-
-        new_product = Product(
-            product_name=str(name).strip(),
-            category="Dresses",
-            price=float(price),
-            description=str(desc).strip(),
-            image_url=final_img,
-            colour=str(colour).strip()
-        )
-        db.add(new_product)
-        db.flush()
-        products_added += 1
-
-        for _, row in group.iterrows():
-            size = row.get('Quantity Size', row.get('Size', 'Standard'))
-            qty = row.get('Quantity for each', 0)
-            if pd.notna(size) and str(size).strip() != "":
-                inv_item = Inventory(
-                    product_id=new_product.product_id,
-                    size=str(size).strip(),
-                    stock_quantity=int(qty) if pd.notna(qty) else 0
-                )
-                db.add(inv_item)
-                inventory_added += 1
-
-    db.commit()
-    print(f"✅ Added {products_added} products and {inventory_added} inventory items.")
-    db.close()
 
 if __name__ == "__main__":
     init_db()
-    populate_initial_data()
+    update_or_create_data()
