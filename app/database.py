@@ -3,18 +3,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# Get DB URL
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 
-# --- DATABASE CONFIG ---
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    # Reduced to 10 to allow multiple processes to share the DB comfortably
-    pool_size=10,
-    max_overflow=20,
-    pool_recycle=1800,
-    pool_timeout=5,
-    pool_pre_ping=True
+    pool_size=25,              # Increased from 10
+    max_overflow=50,           # Increased from 20
+    pool_timeout=30,           # Increased from 5s → 30s
+    pool_recycle=3600,         # 1 hour
+    pool_pre_ping=True,        # Already good
+    pool_use_lifo=True,        # Better for high concurrency
+    echo=False                 # Set True only for debugging
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
