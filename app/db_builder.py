@@ -6,7 +6,6 @@ from app.database import engine, SessionLocal
 from app.models import Base, Product, Inventory
 
 
-
 def init_db():
     """Creates tables ONLY if they don't exist."""
     inspector = inspect(engine)
@@ -58,17 +57,18 @@ def upsert_product(db, name, category, price, desc, img, colour, size, qty):
         db.flush()
         prod_id = new_prod.product_id
 
-    # Inventory
+    # Inventory Logic
     if pd.notna(size) and str(size).strip():
         clean_size = str(size).strip()
         inv = db.query(Inventory).filter(Inventory.product_id == prod_id, Inventory.size == clean_size).first()
         if inv:
             inv.stock_quantity = qty
+            # print(f"  -> Updated Stock: {name} [{clean_size}] = {qty}") # Optional debug
         else:
             db.add(Inventory(product_id=prod_id, size=clean_size, stock_quantity=qty))
+            # print(f"  -> Added Inventory: {name} [{clean_size}] = {qty}") # Optional debug
 
 
-# ✅ RENAMED BACK to match server.py
 def populate_initial_data():
     db = SessionLocal()
     try:
@@ -87,6 +87,7 @@ def populate_initial_data():
 
         try:
             df_check = pd.read_excel(excel_path)
+            # Handle double-header issue if it exists
             if "Dress Name" not in df_check.columns:
                 df_raw = pd.read_excel(excel_path, header=None)
                 row0 = df_raw.iloc[0].fillna('').astype(str).apply(clean_column_name)
@@ -108,17 +109,14 @@ def populate_initial_data():
             if col in df.columns:
                 df[col] = df[col].astype(str).apply(lambda x: clean_prefix(x, prefix))
 
-        try:
-            df.to_excel(excel_path, index=False)
-            print("--- ✅ Cleaned Excel file saved back to disk ---")
-        except:
-            pass
-
-        # Mapping
+        # 4. Column Mapping (FIXED: Added explicit 'Size' check)
         col_map = {}
         for col in df.columns:
-            c = col.lower()
+            c = col.lower().strip()
+
             if "size" in c and "quantity" in c:
+                col_map[col] = "Quantity Size"
+            elif c == "size":  # <--- FIX: Catch explicit "Size" column
                 col_map[col] = "Quantity Size"
             elif "quantity" in c:
                 col_map[col] = "Quantity for each"
@@ -130,13 +128,16 @@ def populate_initial_data():
                 col_map[col] = "Full set Price"
             elif "description" in c:
                 col_map[col] = "Dress description"
+
         df.rename(columns=col_map, inplace=True)
 
+        # Forward Fill for merged cells
         fill_cols = [c for c in df.columns if
                      c in ['Dress Code', 'Dress Name', 'Colour', 'Dress description', 'Unit Price (LKR)',
                            'Full set Price', 'image_url']]
         df[fill_cols] = df[fill_cols].ffill()
 
+        print("--- 🔄 Syncing Inventory... ---")
         grouped = df.groupby(['Dress Name', 'Colour'])
         for (name, colour), group in grouped:
             name, colour = str(name).strip(), str(colour).strip()
@@ -152,6 +153,7 @@ def populate_initial_data():
                 upsert_product(db, name, "Individual", float(u_price), desc, img, colour, None, 0)
                 for _, r in group.iterrows():
                     qty = 0 if is_sold else int(r.get('Quantity for each', 0) or 0)
+                    # This will now correctly find the size because we renamed the column
                     upsert_product(db, name, "Individual", float(u_price), desc, img, colour, r.get('Quantity Size'),
                                    qty)
 
@@ -166,7 +168,7 @@ def populate_initial_data():
                     upsert_product(db, b_name, "Set", float(s_price), b_desc, img, colour, r.get('Quantity Size'), qty)
 
         db.commit()
-        print("✅ Database Sync Complete.")
+        print(f"✅ Database Sync Complete. Processed {len(grouped)} unique product groups.")
     except Exception as e:
         print(f"❌ DB Sync Error: {e}")
         db.rollback()
