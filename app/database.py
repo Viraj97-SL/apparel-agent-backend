@@ -7,7 +7,7 @@ SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    pool_size=25,              # Increased from 10
+    pool_size=30,              # Increased from 10
     max_overflow=50,           # Increased from 20
     pool_timeout=30,           # Increased from 5s → 30s
     pool_recycle=3600,         # 1 hour
