@@ -6,7 +6,7 @@ import styles from './Chat.module.css';
 // --- DATA CONFIGURATION ---
 const CLOUDINARY_BASE = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/";
 
-// ✅ FEATURED PRODUCTS (Updated)
+// ✅ FEATURED PRODUCTS (Updated with New Stock)
 const featuredProducts = [
     {
         name: "Wild Bloom Whisper",
@@ -14,9 +14,24 @@ const featuredProducts = [
         img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769167858/PWBW01_v1lxc3.jpg"
     },
     {
+        name: "Midnight Velvet Dream", // NEW: High-value item
+        price: "4950",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694929/apparel_bot_products/PMVD011.jpg"
+    },
+    {
         name: "Pink Rhapsody",
         price: "2850",
         img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694925/apparel_bot_products/PPR02.jpg"
+    },
+    {
+        name: "Rosé Ruffle Gingham", // NEW: Trending style
+        price: "3700",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769960032/PRRGM059_03_fedgsr.jpg"
+    },
+    {
+        name: "White Wrap Daydress", // NEW: Clean aesthetic
+        price: "2500",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769960130/PWWD03_01_sfktbz.jpg"
     },
     {
         name: "Blue Floral Bloom",
@@ -24,9 +39,14 @@ const featuredProducts = [
         img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694935/apparel_bot_products/PFB019.jpg"
     },
     {
-        name: "Verona Vine",
-        price: "2450",
-        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769509075/PVV020_01_aoxoqs.jpg"
+        name: "Azure Teal Dream", // NEW: Vibrant color
+        price: "2400",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769960086/PATD044_03_iuenxy.jpg"
+    },
+    {
+        name: "Polished Sophistication", // NEW: Linen Set
+        price: "3300",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769960161/PPS025_01_ax45ln.jpg"
     },
     {
         name: "Crimson Canvas",
@@ -39,9 +59,9 @@ const featuredProducts = [
         img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694927/apparel_bot_products/PEWE06.jpg"
     },
     {
-        name: "Chic Rhythms",
-        price: "1990",
-        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694926/apparel_bot_products/PCR04.jpg"
+        name: "Forest Glade Wrap", // NEW: Deep Green
+        price: "2200",
+        img: "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769960101/PFGW039_03_l67xv5.jpg"
     },
     {
         name: "Summer Picnic Gingham",
@@ -50,14 +70,14 @@ const featuredProducts = [
     }
 ];
 
-// ✅ NEWS & TRENDS (Expanded)
+// ✅ NEWS & TRENDS (Updated based on new inventory)
 const trends = [
-    { title: "Trending", body: "Floral prints are up 20% this week!" },
-    { title: "Restock Alert", body: "The Verona Vine is back in Medium." },
-    { title: "Style Tip", body: "Pair Crimson Skirts with white heels." },
-    { title: "New Arrival", body: "Summer Collection is now live." },
-    { title: "Best Seller", body: "Pink Rhapsody is selling out fast!" },
-    { title: "Fabric Note", body: "New Linen collection arriving soon." }
+    { title: "New Arrival", body: "The Rosé Gingham Collection is here!" },
+    { title: "Trending", body: "Linen Sets in Lilac & Black are moving fast." },
+    { title: "Restock Alert", body: "Midnight Velvet Dream is back in stock." },
+    { title: "Style Tip", body: "Pair the White Wrap Dress with gold accessories." },
+    { title: "Fabric Focus", body: "Experience our new premium Italian Silk." },
+    { title: "Best Seller", body: "Pink Rhapsody is selling out fast!" }
 ];
 
 // --- PRODUCT GALLERY COMPONENT ---
