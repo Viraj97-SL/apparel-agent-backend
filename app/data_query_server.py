@@ -1,20 +1,25 @@
 import os
 import difflib
 import re
+import sys
 from sqlalchemy import text
 from dotenv import load_dotenv
 
+# Third-party imports
 from mcp.server.fastmcp import FastMCP
 from app.database import SessionLocal
 
-# We don't import models directly inside tools to avoid circular locking
-# We rely on raw SQL or clean session usage
+# --- 1. Setup ---
+# Load env vars but suppress any output that might break MCP
+load_dotenv(verbose=False)
 
-load_dotenv()
 mcp = FastMCP("data_query")
 
+# 🚨 CONFIG
 CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1/apparel_bot_products/"
 
+
+# --- 2. Helper Functions ---
 
 def clean_image_url(raw_url):
     if not raw_url or str(raw_url).lower() == "nan": return ""
@@ -33,10 +38,11 @@ def format_image_tag(url_string, alt_text):
     return "".join(tags)
 
 
+# --- 3. THE TOOLS ---
+
 @mcp.tool()
 def list_products():
-    """Lists ALL available products. Never hangs."""
-    # CONTEXT MANAGER: Automatically closes connection when done
+    """Lists ALL available products."""
     with SessionLocal() as session:
         try:
             sql = text("""
@@ -59,7 +65,7 @@ def list_products():
 
             return "\n\n".join(output)
         except Exception as e:
-            return f"System Error: {str(e)}"
+            return f"System Error listing products: {str(e)}"
 
 
 @mcp.tool()
@@ -84,7 +90,7 @@ def query_product_database(search_query: str):
                        """)
             results = session.execute(sql, {"q": term}).fetchall()
 
-            # 2. KEYWORD SPLIT (Fixes 'Tie-Shoulder' mismatches)
+            # 2. KEYWORD SPLIT (Fixes 'Tie-Shoulder')
             if not results:
                 clean_query = re.sub(r'[^\w\s]', ' ', search_query)
                 keywords = [w for w in clean_query.split() if len(w) > 2]
@@ -101,13 +107,13 @@ def query_product_database(search_query: str):
                     """)
                     results = session.execute(keyword_sql, params).fetchall()
 
-            # 3. FUZZY MATCH (Fixes typos)
+            # 3. FUZZY MATCH
             if not results:
-                all_names = [r[0] for r in session.execute(text("SELECT product_name FROM products")).fetchall()]
+                all_names_res = session.execute(text("SELECT product_name FROM products")).fetchall()
+                all_names = [r[0] for r in all_names_res]
                 matches = difflib.get_close_matches(search_query, all_names, n=1, cutoff=0.5)
                 if matches:
-                    # Recursive call is tricky with sessions, so we just run the query again with the new name
-                    return query_product_database(matches[0])
+                    return query_product_database(matches[0])  # Retry with fixed name
 
             if not results:
                 return f"No matches found for '{search_query}'."
@@ -140,3 +146,7 @@ def query_product_database(search_query: str):
 
         except Exception as e:
             return f"System Error: {str(e)}"
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
