@@ -4,7 +4,7 @@ import re
 from sqlalchemy import inspect
 from app.database import engine, SessionLocal
 from app.models import Base, Product, Inventory
-#comment
+#CM2
 
 
 def init_db():
