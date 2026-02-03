@@ -64,7 +64,7 @@ def create_rag_chain():
 
     # 5. Create the prompt template
     prompt = ChatPromptTemplate.from_template("""
-    You are a helpful customer service assistant for an online apparel store.
+    You are a helpful customer service assistant for an online apparel store (Pamorya).
     Answer the user's question based only on the following context.
     If the user is saying "hi" or "thank you", reply politely. For other questions, if the context doesn't contain the answer, say "I'm sorry, I don't have that information."
 

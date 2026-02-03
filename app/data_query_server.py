@@ -1,136 +1,114 @@
 import os
 import sys
-import json
-import uuid
+import difflib
 import re
-import difflib  # <--- NEW: For spelling correction
-from typing import List, Optional, Dict, Any, Union
+from typing import Optional
+from dotenv import load_dotenv
+from sqlalchemy import text
 
 # Third-party imports
-from dotenv import load_dotenv
-from sqlalchemy import text, or_
-from langchain_community.utilities import SQLDatabase
-from langchain_community.agent_toolkits import SQLDatabaseToolkit
-from langchain_google_genai import ChatGoogleGenerativeAI
 from mcp.server.fastmcp import FastMCP
+from app.database import SessionLocal
+from app.models import Product, Inventory
 
-# --- NEW IMPORTS (Postgres/ORM) ---
-from app.database import engine, SessionLocal
-from app.models import Product, Inventory, Order, Customer, OrderItem, Return, RestockNotification
-
-
-# --- Helper for Safe Logging ---
-def log_warning(msg: str):
-    sys.stderr.write(f"[WARNING] {msg}\n")
-    sys.stderr.flush()
-
-
-# --- 1. Cloud-Aware Environment Setup ---
+# --- 1. Setup ---
 load_dotenv()
-
-google_api_key = os.getenv("GOOGLE_API_KEY")
-if not google_api_key:
-    log_warning("GOOGLE_API_KEY not found in env.")
-
-# --- 2. Initialize LLM ---
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-8b",
-    google_api_key=google_api_key,
-    temperature=0
-)
-
-# --- 3. Initialize MCP Server ---
 mcp = FastMCP("data_query")
 
-# 🚨 CONFIG: Cloudinary Path 🚨
-CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
+# 🚨 CONFIG: Base URL for fallbacks (only used if DB has partial paths)
+CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1/apparel_bot_products/"
 
 
-# --- 4. HUMAN-PROOFING HELPER FUNCTIONS ---
+# --- 2. Advanced Helper Functions ---
 
-def text_to_int(text_val: Union[str, int]) -> int:
-    """Converts 'one', 'two', '10' to integer 1, 2, 10."""
-    if isinstance(text_val, int):
-        return text_val
-
-    text_val = str(text_val).lower().strip()
-    if text_val.isdigit():
-        return int(text_val)
-
-    mapping = {
-        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-        "a pair": 2, "a couple": 2, "single": 1
-    }
-    return mapping.get(text_val, 1)  # Default to 1 if unknown
-
-
-def clean_phone(phone: str) -> str:
-    """Removes spaces, dashes, brackets from phone numbers."""
-    # Keep only digits and the plus sign
-    return re.sub(r'[^\d+]', '', str(phone))
-
-
-def smart_find_product(session, search_term: str) -> Optional[Product]:
+def clean_image_url(raw_url: str) -> str:
     """
-    Tries to find a product using:
-    1. Exact match (case-insensitive)
-    2. Partial match (SQL ILIKE)
-    3. Fuzzy match (Spelling correction)
+    Smartly handles Full URLs vs Filenames.
     """
-    # 1. Try SQL ILIKE (Partial match)
-    # This covers "Verona" -> "Verona Vine"
-    exact_or_partial = session.query(Product).filter(
-        Product.product_name.ilike(f"%{search_term}%")
-    ).first()
+    if not raw_url or str(raw_url).lower() == "nan":
+        return ""
 
-    if exact_or_partial:
-        return exact_or_partial
+    raw_url = str(raw_url).strip()
 
-    # 2. Fuzzy Match (Spelling errors)
-    # If "Verone" or "Cimson", SQL fails. We need Python to fix it.
-    all_products = session.query(Product.product_name).all()
-    all_names = [p[0] for p in all_products]
+    # If it's already a full link, return it
+    if raw_url.startswith("http"):
+        return raw_url
 
-    # Get closest match (0.6 cutoff means 60% similarity required)
+    # If it's just a filename (e.g., "PWBW01.jpg"), append base
+    return f"{CLOUDINARY_BASE_URL}{raw_url}"
+
+
+def format_image_tag(url_string: str, alt_text: str) -> str:
+    """Creates HTML tags for up to 3 images."""
+    if not url_string: return ""
+
+    # Handle comma-separated lists
+    urls = [clean_image_url(u) for u in url_string.split(',')]
+
+    # Return HTML for first 3 images
+    tags = []
+    for u in urls[:3]:
+        if u:
+            tags.append(
+                f'<img src="{u}" alt="{alt_text}" style="max-width: 150px; border-radius: 8px; margin: 5px;" />')
+    return "".join(tags)
+
+
+def smart_find_product_name(session, search_term: str) -> Optional[str]:
+    """
+    Advanced Logic:
+    1. Exact Match
+    2. SQL Partial Match (ILIKE)
+    3. Spelling Correction (Difflib)
+    """
+    # 1. SQL ILIKE (Fastest)
+    sql = text("SELECT product_name FROM products WHERE product_name ILIKE :q LIMIT 1")
+    result = session.execute(sql, {"q": f"%{search_term}%"}).fetchone()
+    if result:
+        return result[0]
+
+    # 2. Spelling Correction (Slower, but smarter)
+    # Fetches all names to find "Verone" -> "Verona"
+    all_names = [r[0] for r in session.execute(text("SELECT product_name FROM products")).fetchall()]
+
     matches = difflib.get_close_matches(search_term, all_names, n=1, cutoff=0.6)
-
     if matches:
-        best_guess = matches[0]
-        print(f"   -> Fuzzy Match: corrected '{search_term}' to '{best_guess}'")
-        return session.query(Product).filter(Product.product_name == best_guess).first()
+        print(f"DEBUG: Autocorrected '{search_term}' -> '{matches[0]}'")
+        return matches[0]
 
     return None
 
 
-# --- 5. TOOLS ---
+# --- 3. The Tools (PASSIVE ONLY - NO SALES) ---
 
 @mcp.tool()
-async def list_products(limit: int = 5) -> str:
-    """Lists available products for users to browse."""
+def list_products():
+    """
+    Lists ALL available products with prices.
+    Use this when the user asks 'What do you have?' or 'Show me everything'.
+    """
     session = SessionLocal()
     try:
-        products = session.query(Product).limit(limit).all()
-        if not products:
-            return "We currently have no products listed."
+        # Get all products that have stock
+        sql = text("""
+                   SELECT DISTINCT p.product_name, p.price, p.image_url
+                   FROM products p
+                            JOIN inventory i ON p.product_id = i.product_id
+                   WHERE i.stock_quantity > 0
+                   ORDER BY p.product_name ASC
+                   """)
+        results = session.execute(sql).fetchall()
+
+        if not results:
+            return "No products currently in stock."
 
         output = []
-        for p in products:
-            img_tag = ""
-            if p.image_url:
-                raw_url = str(p.image_url)
-                if "localhost" in raw_url:
-                    filename = raw_url.split("/")[-1]
-                    full_url = f"{CLOUDINARY_BASE_URL}{filename}"
-                elif raw_url.startswith("http"):
-                    full_url = raw_url
-                else:
-                    full_url = f"{CLOUDINARY_BASE_URL}{raw_url}"
-                img_tag = f'<img src="{full_url}" alt="{p.product_name}" style="max-width: 150px; border-radius: 8px;" />'
+        for r in results:
+            name, price, img_raw = r[0], r[1], r[2]
+            img_tag = format_image_tag(img_raw, name)
+            output.append(f"• **{name}** - LKR {price}\n  {img_tag}")
 
-            output.append(f"• **{p.product_name}** - LKR {p.price}\n  {p.description}\n  {img_tag}")
-
-        return "\n\n".join(output) + "\n\n(Ask for more details on any item!)"
+        return "\n\n".join(output)
     except Exception as e:
         return f"Error listing products: {str(e)}"
     finally:
@@ -138,264 +116,65 @@ async def list_products(limit: int = 5) -> str:
 
 
 @mcp.tool()
-async def create_draft_order(
-        customer_email: str,
-        customer_name: str,
-        shipping_address: str,
-        phone_number: str,
-        items: str
-) -> str:
+def query_product_database(search_query: str):
     """
-    Creates a new order.
-    'items' must be a JSON string: '[{"product_name": "...", "size": "...", "quantity": 1}]'
+    Smart Search. Finds products by name, category, or description.
+    Handles typos (e.g. 'blue floral' finds 'Blue Floral Bloom').
+    Returns: Price, Description, Sizes, Images.
     """
     session = SessionLocal()
     try:
-        # --- ROBUST PARSING ---
-        item_list = []
-        if isinstance(items, str):
-            try:
-                cleaned_items = items.strip()
-                if cleaned_items.startswith("```"):
-                    lines = cleaned_items.splitlines()
-                    if lines[0].startswith("```"): lines = lines[1:]
-                    if lines[-1].startswith("```"): lines = lines[:-1]
-                    cleaned_items = "\n".join(lines)
-                item_list = json.loads(cleaned_items)
-            except:
-                return f"Error: Could not parse items JSON. Received: {items}"
-        elif isinstance(items, list):
-            item_list = items
+        # 1. Try to Autocorrect the name first
+        corrected_name = smart_find_product_name(session, search_query)
+        final_query = corrected_name if corrected_name else search_query
 
-        # --- PHONE CLEANING ---
-        clean_phone_number = clean_phone(phone_number)
-
-        # 2. Find/Create Customer
-        customer = session.query(Customer).filter(Customer.email == customer_email).first()
-        if not customer:
-            customer = Customer(
-                email=customer_email,
-                full_name=customer_name,
-                phone_number=clean_phone_number,
-                shipping_address=shipping_address
-            )
-            session.add(customer)
-            session.flush()
-        else:
-            customer.full_name = customer_name
-            customer.shipping_address = shipping_address
-            customer.phone_number = clean_phone_number
-
-        # 3. Process Items
-        total_amount = 0.0
-        order_items_objects = []
-
-        if not item_list: return "Error: No items found."
-
-        for item in item_list:
-            p_name_input = item.get("product_name") or item.get("product")
-            size_input = item.get("size")
-            qty_input = item.get("quantity", 1)
-
-            # A. SMART QUANTITY ("one" -> 1)
-            qty = text_to_int(qty_input)
-
-            if not p_name_input or not size_input:
-                return f"Error: Missing product name or size in {item}"
-
-            # B. SMART PRODUCT SEARCH (Fuzzy Match)
-            product = smart_find_product(session, p_name_input)
-            if not product:
-                return f"Error: We couldn't find a product matching '{p_name_input}'. Please check the name."
-
-            # C. SMART SIZE SEARCH (Case Insensitive)
-            # We iterate through inventory to find the closest size match (e.g. 'm' -> 'M')
-            inventory = session.query(Inventory).filter(
-                Inventory.product_id == product.product_id,
-                Inventory.size.ilike(size_input)  # ILIKE handles 'm' vs 'M'
-            ).first()
-
-            if not inventory:
-                return f"Error: Size '{size_input}' is not available for {product.product_name}."
-
-            if inventory.stock_quantity < qty:
-                return f"Error: Only {inventory.stock_quantity} left of {product.product_name} (Size {size_input})."
-
-            # Deduct Stock
-            inventory.stock_quantity -= qty
-
-            line_total = product.price * qty
-            total_amount += line_total
-
-            order_item = OrderItem(
-                product_name=product.product_name,
-                size=inventory.size,  # Use the official DB size (e.g. "M") not user input ("m")
-                quantity=qty,
-                price_at_purchase=product.price
-            )
-            order_items_objects.append(order_item)
-
-        # 4. Create Order
-        new_order = Order(
-            customer_id=customer.customer_id,
-            status="pending_payment",
-            total_amount=total_amount
-        )
-        session.add(new_order)
-        session.flush()
-
-        for obj in order_items_objects:
-            obj.order_id = new_order.order_id
-            session.add(obj)
-
-        session.commit()
-        return json.dumps({
-            "status": "success",
-            "order_id": new_order.order_id,
-            "total": total_amount,
-            "message": "Draft order created. Proceed to payment."
-        })
-
-    except Exception as e:
-        session.rollback()
-        return f"Error creating order: {str(e)}"
-    finally:
-        session.close()
-
-
-@mcp.tool()
-async def generate_payment_link(order_id: str) -> str:
-    """
-    Finalizes the order as 'Cash on Delivery' (COD).
-    """
-    session = SessionLocal()
-    try:
-        # 1. Fetch Order
-        order = session.query(Order).filter(Order.order_id == order_id).first()
-        if not order:
-            return "Error: Order ID not found."
-
-        # 2. Add Shipping Logic (Flat Rate 400 LKR)
-        # (If you haven't added this in create_draft_order yet, we do it here)
-        shipping_cost = 400.0
-
-        # Check if shipping was already added to avoid double charging
-        # This is a simple check; in production, use a flag.
-        if order.total_amount < 1000:  # Suspiciously low, maybe shipping not added?
-            # Just a safety heuristic, or strictly enforce it in create_draft_order
-            pass
-
-        final_total = order.total_amount  # Assuming total includes shipping now
-
-        # 3. Update Status to 'Confirmed' (since it's COD, no payment gateway needed)
-        order.status = "confirmed_cod"
-        session.commit()
-
-        # 4. Return a "Receipt" Message
-        return json.dumps({
-            "payment_url": "COD_SUCCESS",  # Frontend will see this and show success message
-            "status": "success",
-            "message": (
-                f"✅ Order Confirmed! (Cash on Delivery)\n\n"
-                f"• Order ID: {order.order_id[:8]}\n"
-                f"• Total to Pay: LKR {final_total}\n\n"
-                f"Your package will be shipped within 2-3 days. Please have the cash ready for the courier."
-            )
-        })
-
-    except Exception as e:
-        session.rollback()
-        return f"Error finalizing COD order: {str(e)}"
-    finally:
-        session.close()
-
-@mcp.tool()
-def sql_db_query(query: str) -> str:
-    try:
-        db = SQLDatabase(engine, include_tables=['orders', 'customers', 'returns'])
-        sql_toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-        query_tool = next(t for t in sql_toolkit.get_tools() if t.name == 'sql_db_query')
-        return query_tool.invoke({"query": query})
-    except Exception as e:
-        return f"Error: {e}"
-
-
-@mcp.tool()
-def sql_db_schema(table_names: Optional[str] = None) -> str:
-    try:
-        db = SQLDatabase(engine, include_tables=['orders', 'customers', 'returns'])
-        sql_toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-        schema_tool = next(t for t in sql_toolkit.get_tools() if t.name == 'sql_db_schema')
-        return schema_tool.invoke({"table_names": table_names or ""})
-    except Exception as e:
-        return f"Error: {e}"
-
-
-@mcp.tool()
-async def query_product_database(product_name: str = None, category: str = None, colour: str = None,
-                                 size: str = None) -> str:
-    # 🚨 CONFIG: Cloudinary Path 🚨
-    CLOUDINARY_BASE_URL = "[https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/](https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/)"
-
-    # Clean inputs
-    if product_name == "None": product_name = None
-    if category == "None": category = None
-    if colour == "None": colour = None
-    if size == "None": size = None
-
-    session = SessionLocal()
-    try:
-        # Start building the query
-        query = session.query(Product, Inventory.size, Inventory.stock_quantity) \
-            .outerjoin(Inventory, Product.product_id == Inventory.product_id)
-
-        # Apply filters
-        if product_name:
-            query = query.filter(Product.product_name.ilike(f"%{product_name}%"))
-        if category:
-            query = query.filter(Product.category.ilike(f"%{category}%"))
-        if colour:
-            query = query.filter(Product.colour.ilike(f"%{colour}%"))
-        if size:
-            query = query.filter(Inventory.size.ilike(f"%{size}%"))
-
-        results = query.limit(5).all()
+        # 2. Search DB with the optimized term
+        search_term = f"%{final_query}%"
+        sql = text("""
+                   SELECT p.product_name, p.price, p.description, p.image_url, i.size, i.stock_quantity
+                   FROM products p
+                            LEFT JOIN inventory i ON p.product_id = i.product_id
+                   WHERE (p.product_name ILIKE :q OR p.description ILIKE :q OR p.category ILIKE :q)
+                     AND i.stock_quantity > 0
+                   LIMIT 15
+                   """)
+        results = session.execute(sql, {"q": search_term}).fetchall()
 
         if not results:
-            return "No exact match found. Try searching with fewer details."
+            return f"No products found matching '{search_query}'. Try a simpler keyword."
 
-        formatted_results = []
-        for prod, inv_size, inv_qty in results:
-            try:
-                # 1. Handle Stock Logic safely
-                if inv_qty is not None:
-                    stock_status = f"Out of Stock (size {inv_size})" if inv_qty <= 0 else f"In Stock (size {inv_size}, {inv_qty} left)"
-                else:
-                    stock_status = "Stock unknown"
+        # 3. Group Results (Combine sizes for same product)
+        products = {}
+        for r in results:
+            name = r[0]
+            if name not in products:
+                products[name] = {
+                    "price": r[1],
+                    "desc": r[2],
+                    "image_html": format_image_tag(r[3], name),
+                    "sizes": []
+                }
+            products[name]["sizes"].append(f"{r[4]} ({r[5]} left)")
 
-                # 2. Handle Image Logic
-                image_tag = ""
-                if prod.image_url:
-                    raw_url = str(prod.image_url)
-                    if "localhost" in raw_url:
-                        filename = raw_url.split("/")[-1]
-                        full_url = f"{CLOUDINARY_BASE_URL}{filename}"
-                    elif raw_url.startswith("http"):
-                        full_url = raw_url
-                    else:
-                        full_url = f"{CLOUDINARY_BASE_URL}{raw_url}"
-                    image_tag = f'<img src="{full_url}" alt="{prod.product_name}" style="max-width: 200px; border-radius: 8px;" />'
+        # 4. Format Output
+        output = []
+        if corrected_name and corrected_name.lower() != search_query.lower():
+            output.append(f"*(Found matches for '{corrected_name}')*\n")
 
-                formatted_results.append(
-                    f"Product: {prod.product_name}\nPrice: {prod.price}\nColour: {prod.colour}\nSize: {inv_size}\nDescription: {prod.description}\nStatus: {stock_status}\n{image_tag}"
-                )
-            except Exception:
-                continue
+        for name, details in products.items():
+            sizes_str = ", ".join(details["sizes"])
+            entry = (
+                f"**{name}** - LKR {details['price']}\n"
+                f"{details['desc']}\n"
+                f"Sizes: {sizes_str}\n"
+                f"{details['image_html']}"
+            )
+            output.append(entry)
 
-        return "\n\n---PRODUCT---\n\n".join(formatted_results)
+        return "\n\n".join(output)
 
     except Exception as e:
-        return f"Error querying product database: {str(e)}"
+        return f"Database search error: {str(e)}"
     finally:
         session.close()
 
