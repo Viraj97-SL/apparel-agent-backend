@@ -4,7 +4,6 @@ import re
 from sqlalchemy import inspect
 from app.database import engine, SessionLocal
 from app.models import Base, Product, Inventory
-#CM2
 
 
 def init_db():
@@ -22,7 +21,6 @@ def clean_column_name(col_name):
 
 
 def clean_prefix(value, prefix):
-    """Removes accidental prefixes like 'Dress Name Wild Bloom...'"""
     val_str = str(value).strip()
     if val_str.lower().startswith(prefix.lower()):
         return re.sub(f"^{re.escape(prefix)}[:\s]*", "", val_str, flags=re.IGNORECASE)
@@ -30,11 +28,33 @@ def clean_prefix(value, prefix):
 
 
 def is_sold_out(row):
-    """Scans row for 'sold out' text."""
     for val in row.values:
         if isinstance(val, str) and "sold out" in val.lower():
             return True
     return False
+
+
+# --- 🧠 NEW: Smart Categorization Logic ---
+def detect_category(name, description, is_set_bundle=False):
+    """Infers category from product name and description keywords."""
+    text = (str(name) + " " + str(description)).lower()
+
+    if is_set_bundle or "full set" in text or "ensemble" in text:
+        return "Sets & Co-ords"
+    if "skirt" in text:
+        return "Skirts"
+    if "pant" in text or "trouser" in text or "culotte" in text:
+        return "Pants & Trousers"
+    if "jumper" in text or "cardigan" in text or "sweater" in text:
+        return "Jumpers & Knits"
+    if "blouse" in text or "shirt" in text:
+        return "Tops & Blouses"
+    if "croptop" in text or "crop top" in text or "tank" in text or "top" in text:
+        return "Tops & Blouses"
+    if "dress" in text or "gown" in text or "frock" in text:
+        return "Dresses"
+
+    return "General"
 
 
 def upsert_product(db, name, category, price, desc, img, colour, size, qty):
@@ -47,6 +67,7 @@ def upsert_product(db, name, category, price, desc, img, colour, size, qty):
     if existing_prod:
         existing_prod.price = price
         existing_prod.description = desc
+        existing_prod.category = category  # Update category if logic changes
         if img: existing_prod.image_url = img
         prod_id = existing_prod.product_id
     else:
@@ -58,37 +79,35 @@ def upsert_product(db, name, category, price, desc, img, colour, size, qty):
         db.flush()
         prod_id = new_prod.product_id
 
-    # Inventory Logic
+    # Inventory
     if pd.notna(size) and str(size).strip():
         clean_size = str(size).strip()
         inv = db.query(Inventory).filter(Inventory.product_id == prod_id, Inventory.size == clean_size).first()
         if inv:
             inv.stock_quantity = qty
-            # print(f"  -> Updated Stock: {name} [{clean_size}] = {qty}") # Optional debug
         else:
             db.add(Inventory(product_id=prod_id, size=clean_size, stock_quantity=qty))
-            # print(f"  -> Added Inventory: {name} [{clean_size}] = {qty}") # Optional debug
 
 
 def populate_initial_data():
     db = SessionLocal()
     try:
-        # 2. Read Excel
         print("--- 📊 Reading Excel for Database Sync... ---")
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        excel_path = os.path.join(base_dir, "Pamorya_Stock(1).xlsx")
 
-        excel_path = os.path.join(base_dir, "Pamorya_Stock.xlsx")
+        # Fallback to original name if needed
         if not os.path.exists(excel_path):
-            excel_path = os.path.join(base_dir, "Pamorya_Stock(1).xlsx")
-            if not os.path.exists(excel_path):
-                print("❌ No Excel file found.")
-                return
+            excel_path = os.path.join(base_dir, "Pamorya_Stock.xlsx")
+
+        if not os.path.exists(excel_path):
+            print("❌ No Excel file found.")
+            return
 
         print(f"--- 📂 Processing: {os.path.basename(excel_path)} ---")
 
         try:
             df_check = pd.read_excel(excel_path)
-            # Handle double-header issue if it exists
             if "Dress Name" not in df_check.columns:
                 df_raw = pd.read_excel(excel_path, header=None)
                 row0 = df_raw.iloc[0].fillna('').astype(str).apply(clean_column_name)
@@ -103,21 +122,18 @@ def populate_initial_data():
             print(f"❌ Error reading Excel: {e}")
             return
 
-        # 3. Clean Garbage Prefixes AND Save back to disk
         print("--- 🧹 Cleaning Data Prefixes... ---")
         cols_to_clean = {'Dress Name': 'Dress Name', 'Colour': 'Colour', 'Dress description': 'Dress description'}
         for col, prefix in cols_to_clean.items():
             if col in df.columns:
                 df[col] = df[col].astype(str).apply(lambda x: clean_prefix(x, prefix))
 
-        # 4. Column Mapping (FIXED: Added explicit 'Size' check)
         col_map = {}
         for col in df.columns:
             c = col.lower().strip()
-
             if "size" in c and "quantity" in c:
                 col_map[col] = "Quantity Size"
-            elif c == "size":  # <--- FIX: Catch explicit "Size" column
+            elif c == "size":
                 col_map[col] = "Quantity Size"
             elif "quantity" in c:
                 col_map[col] = "Quantity for each"
@@ -129,47 +145,46 @@ def populate_initial_data():
                 col_map[col] = "Full set Price"
             elif "description" in c:
                 col_map[col] = "Dress description"
-
         df.rename(columns=col_map, inplace=True)
 
-        # Forward Fill for merged cells
         fill_cols = [c for c in df.columns if
                      c in ['Dress Code', 'Dress Name', 'Colour', 'Dress description', 'Unit Price (LKR)',
                            'Full set Price', 'image_url']]
         df[fill_cols] = df[fill_cols].ffill()
 
-        print("--- 🔄 Syncing Inventory... ---")
+        print("--- 🔄 Syncing Inventory & Categories... ---")
         grouped = df.groupby(['Dress Name', 'Colour'])
         for (name, colour), group in grouped:
             name, colour = str(name).strip(), str(colour).strip()
             first = group.iloc[0]
-
             desc = str(first.get('Dress description', '')).strip()
             img = first.get('image_url', None)
             is_sold = any(is_sold_out(r) for _, r in group.iterrows())
 
-            # Individual Item
+            # 1. Individual Item
             u_price = pd.to_numeric(first.get('Unit Price (LKR)'), errors='coerce')
             if u_price > 0:
-                upsert_product(db, name, "Individual", float(u_price), desc, img, colour, None, 0)
+                # 🧠 Detect Category automatically
+                cat = detect_category(name, desc, is_set_bundle=False)
+                upsert_product(db, name, cat, float(u_price), desc, img, colour, None, 0)
                 for _, r in group.iterrows():
                     qty = 0 if is_sold else int(r.get('Quantity for each', 0) or 0)
-                    # This will now correctly find the size because we renamed the column
-                    upsert_product(db, name, "Individual", float(u_price), desc, img, colour, r.get('Quantity Size'),
-                                   qty)
+                    upsert_product(db, name, cat, float(u_price), desc, img, colour, r.get('Quantity Size'), qty)
 
-            # Set Bundle
+            # 2. Set Bundle
             s_price = pd.to_numeric(first.get('Full set Price'), errors='coerce')
             if s_price > 0:
                 b_name = f"{name} - Full Set"
                 b_desc = f"{desc}\n(This is a complete set including all matching pieces.)"
-                upsert_product(db, b_name, "Set", float(s_price), b_desc, img, colour, None, 0)
+                # 🧠 Force "Sets" category
+                cat = detect_category(name, desc, is_set_bundle=True)
+                upsert_product(db, b_name, cat, float(s_price), b_desc, img, colour, None, 0)
                 for _, r in group.iterrows():
                     qty = 0 if is_sold else int(r.get('Quantity for each', 0) or 0)
-                    upsert_product(db, b_name, "Set", float(s_price), b_desc, img, colour, r.get('Quantity Size'), qty)
+                    upsert_product(db, b_name, cat, float(s_price), b_desc, img, colour, r.get('Quantity Size'), qty)
 
         db.commit()
-        print(f"✅ Database Sync Complete. Processed {len(grouped)} unique product groups.")
+        print(f"✅ Database Sync Complete. Processed {len(grouped)} groups.")
     except Exception as e:
         print(f"❌ DB Sync Error: {e}")
         db.rollback()
