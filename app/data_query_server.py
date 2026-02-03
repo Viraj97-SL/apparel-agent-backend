@@ -9,77 +9,119 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from app.database import SessionLocal
 
-# --- 1. Setup ---
 load_dotenv(verbose=False)
 mcp = FastMCP("data_query")
 
-# 🚨 CONFIG CLOUDINARY_BASE_URL
 CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1/apparel_bot_products/"
 
 
-# --- 2. Helper Functions ---
 def clean_image_url(raw_url):
-    if not raw_url or str(raw_url).lower() == "nan":
-        return ""
+    if not raw_url or str(raw_url).lower() == "nan": return ""
     raw_url = str(raw_url).strip()
     return raw_url if raw_url.startswith("http") else f"{CLOUDINARY_BASE_URL}{raw_url}"
 
 
 def format_image_tag(url_string, alt_text):
-    if not url_string:
-        return ""
+    if not url_string: return ""
     urls = [clean_image_url(u) for u in url_string.split(',')]
     tags = []
+    # Limit to 3 images max
     for u in urls[:3]:
-        if u:
-            tags.append(
-                f'<img src="{u}" alt="{alt_text}" style="max-width: 150px; border-radius: 8px; margin: 5px;" />'
-            )
+        if u: tags.append(
+            f'<img src="{u}" alt="{alt_text}" style="max-width: 150px; border-radius: 8px; margin: 5px;" />')
     return "".join(tags)
 
 
-# --- 3. Retry Decorator ---
 def execute_with_retry(func, max_retries=3, initial_delay=1):
-    """
-    Retry DB operations on pool/timeout errors with exponential backoff.
-    """
     for attempt in range(max_retries):
         try:
             return func()
         except (OperationalError, TimeoutError) as e:
             if "QueuePool" in str(e) or "timeout" in str(e):
                 delay = initial_delay * (2 ** attempt)
-                print(f"DB retry {attempt + 1}/{max_retries} after error: {str(e)}. Waiting {delay}s...")
+                print(f"DB retry {attempt + 1}/{max_retries}. Waiting {delay}s...")
                 sleep(delay)
                 continue
             raise
-    raise Exception(f"Max retries ({max_retries}) exceeded for DB operation.")
+    raise Exception(f"Max retries exceeded.")
 
 
-# --- 4. THE TOOLS ---
+# --- NEW TOOL: Categories ---
 @mcp.tool()
-def list_products():
-    """Lists ALL available products."""
+def get_available_categories():
+    """Returns a list of product categories (e.g. Dresses, Skirts) with counts."""
 
     def run_query():
         with SessionLocal() as session:
             try:
-                # Optimized query to just get names and prices of in-stock items
+                # Count in-stock products per category
                 sql = text("""
-                           SELECT DISTINCT p.product_name, p.price, p.image_url
+                           SELECT category, COUNT(DISTINCT p.product_id) as count
                            FROM products p
                                     JOIN inventory i ON p.product_id = i.product_id
                            WHERE i.stock_quantity > 0
-                           ORDER BY p.product_name ASC
+                           GROUP BY category
+                           ORDER BY count DESC
                            """)
                 results = session.execute(sql).fetchall()
+                if not results: return "No categories found."
+
+                output = ["**Available Collections:**"]
+                for r in results:
+                    cat = r[0] if r[0] else "Uncategorized"
+                    count = r[1]
+                    output.append(f"- {cat} ({count} items)")
+
+                return "\n".join(output)
+            except Exception as e:
+                return f"Error fetching categories: {e}"
+
+    return execute_with_retry(run_query)
+
+
+# --- UPDATED TOOL: List Products with Filter ---
+@mcp.tool()
+def list_products(category_filter: str = None):
+    """
+    Lists products.
+    Args:
+        category_filter: Optional. Use strict category names like 'Dresses', 'Skirts', 'Sets & Co-ords', 'Tops & Blouses'.
+    """
+
+    def run_query():
+        with SessionLocal() as session:
+            try:
+                # Base Query
+                query_str = """
+                            SELECT DISTINCT p.product_name, p.price, p.image_url
+                            FROM products p
+                                     JOIN inventory i ON p.product_id = i.product_id
+                            WHERE i.stock_quantity > 0 \
+                            """
+                params = {}
+
+                # Apply Category Filter
+                if category_filter and category_filter.lower() != "all":
+                    query_str += " AND p.category ILIKE :cat"
+                    params["cat"] = f"%{category_filter}%"
+
+                query_str += " ORDER BY p.product_name ASC LIMIT 20"
+
+                results = session.execute(text(query_str), params).fetchall()
+
                 if not results:
-                    return "Inventory Check: No products currently in stock."
+                    return f"No products found in category '{category_filter}'."
+
                 output = []
+                if category_filter:
+                    output.append(f"**Showing results for: {category_filter}**\n")
+
                 for r in results:
                     name, price, img_raw = r[0], r[1], r[2]
-                    img_tag = format_image_tag(img_raw, name)
+                    first_img = clean_image_url(str(img_raw).split(',')[0]) if img_raw else ""
+                    img_tag = f'<img src="{first_img}" alt="{name}" style="max-width: 100px; border-radius: 5px;" />' if first_img else ""
                     output.append(f"• **{name}** - LKR {price}\n {img_tag}")
+
                 return "\n\n".join(output)
             except Exception as e:
                 return f"System Error listing products: {str(e)}"
@@ -90,25 +132,26 @@ def list_products():
 @mcp.tool()
 def query_product_database(search_query: str):
     """ Finds products by Name/Category/Description. Handles 'Tie-Shoulder' via keyword splitting. """
-    if not search_query:
-        return "Please provide a search term."
-
-    # Prevent infinite recursion for fuzzy matches
+    if not search_query: return "Please provide a search term."
     search_query = search_query.strip()
 
     def run_query():
         with SessionLocal() as session:
             try:
-                # 1. SEARCH QUERY (Removed stock_quantity > 0 filter here to detect Out of Stock items)
+                # 1. SEARCH
                 term = f"%{search_query}%"
-
-                # Base query gets product info regardless of stock
                 sql = text("""
-                           SELECT p.product_name, p.price, p.description, p.image_url, i.size, i.stock_quantity
+                           SELECT p.product_name,
+                                  p.price,
+                                  p.description,
+                                  p.image_url,
+                                  i.size,
+                                  i.stock_quantity,
+                                  p.category
                            FROM products p
                                     LEFT JOIN inventory i ON p.product_id = i.product_id
                            WHERE (p.product_name ILIKE :q OR p.description ILIKE :q OR p.category ILIKE :q)
-                           LIMIT 30
+                           LIMIT 100
                            """)
                 results = session.execute(sql, {"q": term}).fetchall()
 
@@ -120,73 +163,64 @@ def query_product_database(search_query: str):
                         conditions = [f"p.product_name ILIKE :w{i}" for i in range(len(keywords))]
                         params = {f"w{i}": f"%{w}%" for i, w in enumerate(keywords)}
                         keyword_sql = text(f"""
-                            SELECT p.product_name, p.price, p.description, p.image_url, i.size, i.stock_quantity
+                            SELECT p.product_name, p.price, p.description, p.image_url, i.size, i.stock_quantity, p.category
                             FROM products p
                             LEFT JOIN inventory i ON p.product_id = i.product_id
                             WHERE ({" AND ".join(conditions)})
+                            LIMIT 100
                         """)
                         results = session.execute(keyword_sql, params).fetchall()
 
-                # 3. FUZZY MATCH (Only if strictly no results found)
+                # 3. FUZZY MATCH (Fallback)
                 if not results:
-                    # Get ALL product names efficiently
                     all_names_res = session.execute(text("SELECT product_name FROM products")).fetchall()
                     all_names = [r[0] for r in all_names_res]
-
                     matches = difflib.get_close_matches(search_query, all_names, n=1, cutoff=0.5)
-
                     if matches:
                         match_name = matches[0]
-                        # CRITICAL FIX: Prevent infinite recursion loop
-                        # Only recurse if the match is significantly different from input
                         if match_name.lower() != search_query.lower():
                             return query_product_database(match_name)
-                        else:
-                            # If it matches itself but wasn't found in SQL, something is wrong or it's a data sync issue
-                            return f"Found '{match_name}' in index but failed to retrieve details. Please check database."
 
                 if not results:
                     return f"No matches found for '{search_query}'."
 
-                # 4. PROCESS RESULTS & CHECK STOCK
+                # 4. PROCESS RESULTS
                 products = {}
                 for r in results:
                     name = r[0]
                     stock = r[5] if r[5] is not None else 0
-
                     if name not in products:
+                        if len(products) >= 5: continue
                         products[name] = {
                             "price": r[1],
                             "desc": r[2],
                             "image_html": format_image_tag(r[3], name),
+                            "cat": r[6],
                             "sizes": [],
                             "total_stock": 0
                         }
 
-                    # Only show size if stock > 0
-                    if stock > 0:
-                        products[name]["sizes"].append(f"{r[4]} ({stock} left)")
-                        products[name]["total_stock"] += stock
-                    else:
-                        products[name]["sizes"].append(f"{r[4]} (Out of Stock)")
+                    if name in products:
+                        if stock > 0:
+                            products[name]["sizes"].append(f"{r[4]} ({stock} left)")
+                            products[name]["total_stock"] += stock
+                        else:
+                            products[name]["sizes"].append(f"{r[4]} (Out of Stock)")
 
                 output = []
                 for name, details in products.items():
-                    # Filter: Only show "Out of Stock" warning if total stock is 0
-                    stock_msg = ""
-                    if details["total_stock"] == 0:
-                        stock_msg = "\n⚠️ **Currently Out of Stock**"
-
-                    # Consolidate sizes
+                    stock_msg = "\n⚠️ **Currently Out of Stock**" if details["total_stock"] == 0 else ""
                     size_str = ", ".join(details['sizes']) if details['sizes'] else "No stock info"
-
                     entry = (
-                        f"**{name}** - LKR {details['price']}{stock_msg}\n"
+                        f"**{name}** ({details['cat']}) - LKR {details['price']}{stock_msg}\n"
                         f"{details['desc']}\n"
                         f"Sizes: {size_str}\n"
                         f"{details['image_html']}"
                     )
                     output.append(entry)
+
+                if len(results) >= 100:
+                    output.append("*(Results limited to top 5 matches.)*")
 
                 return "\n\n".join(output)
 

@@ -3,7 +3,8 @@ import uuid
 import shutil
 import os
 import sqlite3
-from contextlib import asynccontextmanager  # <--- NEW: Modern Startup Handler
+import traceback  # <--- Ensured this is imported
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +14,6 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 # --- DB IMPORTS ---
 from app.db_builder import init_db, populate_initial_data
-from app.db_builder import init_db, populate_initial_data
 
 # --- SECURITY: Rate Limiting Imports ---
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -21,26 +21,25 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 # --- AGENT IMPORTS ---
-# Ensure these files exist and have no errors!
 from app.agent import app as rag_agent_app
 from app.vto_agent import handle_vto_message
 
 # --- CONFIGURATION ---
 UPLOAD_DIR = "uploaded_images"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-DB_PATH = "apparel.db"  # Path for the startup check
+DB_PATH = "apparel.db"
 
 # SECURITY: Allowed file types and Max Size (5MB)
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "avif"}
 MAX_FILE_SIZE = 5 * 1024 * 1024
 
 
-# --- LIFESPAN MANAGER (The Modern Startup Way) ---
+# --- LIFESPAN MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🔄 Lifespan: Checking database status...")
     try:
-        # 1. Initialize Tables (Postgres)
+        # 1. Initialize Tables
         init_db()
 
         # 2. Populate Data
@@ -53,35 +52,30 @@ async def lifespan(app: FastAPI):
     print("🛑 Shutdown: Server closing...")
 
 # --- INITIALIZE APP ---
-# 1. Setup the Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
 
-# 2. Initialize FastAPI with Lifespan
 app = FastAPI(
     title="Apparel Chatbot API",
     description="Secure API for the multi-agent apparel customer service chatbot.",
     version="1.0",
-    lifespan=lifespan,  # <--- CONNECT LIFESPAN HERE
+    lifespan=lifespan,
     servers=[
         {"url": "https://apparel-agent-backend-production.up.railway.app", "description": "Production Server"},
         {"url": "http://localhost:8000", "description": "Local Development"}
     ]
 )
 
-# 3. Connect Limiter to API
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# 4. Mount Static Files
 app.mount("/uploaded_images", StaticFiles(directory=UPLOAD_DIR), name="images")
-# Mount the product images folder (if you use local images)
 os.makedirs("product_images", exist_ok=True)
 app.mount("/product_images", StaticFiles(directory="product_images"), name="products")
 
 # --- SECURITY: CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # <--- Allow ALL for testing (Change to specific domains in prod if needed)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -155,9 +149,12 @@ async def chat(
                                 final_response = first_part["text"]
                         elif isinstance(raw_content, str):
                             final_response = raw_content
+
     except Exception as e:
-        print(f"ERROR in Chat Endpoint: {e}")
-        final_response = "I encountered an internal error. Please try again."
+        error_msg = f"INTERNAL ERROR: {str(e)}"
+        print(f"❌ {error_msg}")
+        traceback.print_exc()  # Print full stack trace to logs
+        final_response = f"I encountered an internal error: {str(e)[:100]}... Please try again."
 
     if final_response is None:
         final_response = "Sorry, I couldn't find an answer to that."
@@ -166,5 +163,4 @@ async def chat(
 
 
 if __name__ == "__main__":
-    # IMPORTANT: The Dockerfile runs 'uvicorn server:app', so this block is for local testing only.
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)

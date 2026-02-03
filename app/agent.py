@@ -134,16 +134,26 @@ async def rag_agent_node(state: AgentState):
     return {"messages": [AIMessage(content=response_str)]}
 
 
+# --- 1. UPDATE: Data Query Agent Node (The Inventory Specialist) ---
 async def data_query_agent_node(state: AgentState):
     """Calls the WORKER LLM bound to the Query tools."""
     print("\n--- Calling Data Query Agent ---")
 
-    system_prompt = """You are an Inventory Assistant. 
+    system_prompt = """You are an Inventory Assistant for 'Pamorya'.
+
+    **YOUR TOOLBOX:**
+    1. `get_available_categories()`: Use this FIRST if the user asks "What do you have?" or "What kind of clothes do you sell?".
+    2. `list_products(category_filter="...")`: Use this for BROWSING.
+       - Map user words to these valid categories: 'Dresses', 'Skirts', 'Pants & Trousers', 'Tops & Blouses', 'Sets & Co-ords', 'Jumpers & Knits'.
+       - Example: User says "Show me skirts" -> call `list_products(category_filter="Skirts")`.
+       - Example: User says "Do you have tops?" -> call `list_products(category_filter="Tops & Blouses")`.
+    3. `query_product_database(search_query="...")`: Use this for SPECIFIC items.
+       - Example: "Blue floral dress" or "Midnight Petal".
+
     **GUIDELINES:**
-    1. Use 'list_products' to see what we sell.
-    2. Use 'query_product_database' for specific items.
-    3. If the tool says "No products found", apologize.
-    4. **Images:** Always append the exact image tags (e.g. <img src...>) from the tool output to your message.
+    - If the tool says "No products found", apologize and suggest checking `get_available_categories`.
+    - **Images:** Always append the exact image tags (e.g. <img src...>) from the tool output to your message.
+    - Do NOT make up products. Only use what the tools return.
     """
 
     messages = [HumanMessage(content=system_prompt)] + state["messages"]
@@ -276,6 +286,7 @@ def route(next_node: str) -> str:
 
 llm_with_route = llm_supervisor.bind_tools([route])
 
+# --- 2. UPDATE: Supervisor Prompt (The Router) ---
 supervisor_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", """You are the Supervisor Router for 'Pamorya', an elite apparel store AI.
@@ -289,11 +300,13 @@ supervisor_prompt = ChatPromptTemplate.from_messages(
              * Explicit buying intent ("I want to buy", "add to cart", "purchase").
              * Implicit buying intent (User selects a size/quantity after looking at a product).
              * **CRITICAL:** Providing personal details ("My name is...", "Address:...", "071..."). 
-             * **CRITICAL:** If the *previous* message was from the bot asking for order details, the user's response (even if short like "Medium" or "Yes") belongs here.
+             * **CRITICAL:** If the *previous* message was from the bot asking for order details, the user's response belongs here.
 
-        2. **data_query_agent** (INVENTORY): 
-           - OWNERSHIP: Checking stock, prices, sizes, and product descriptions.
-           - TRIGGERS: "Do you have...", "Show me...", "Price of...", "What sizes?".
+        2. **data_query_agent** (INVENTORY & BROWSING): 
+           - OWNERSHIP: Checking stock, prices, sizes, and **Browsing Categories**.
+           - TRIGGERS: 
+             * Specifics: "Do you have...", "Show me...", "Price of...", "What sizes?".
+             * **Browsing:** "Do you have skirts?", "Show me tops", "What do you sell?", "Show me party wear".
            - LIMITATION: If the user says "I want to buy the blue one", that is SALES, not DATA.
 
         3. **rag_agent** (POLICY & CHAT): 
@@ -306,14 +319,13 @@ supervisor_prompt = ChatPromptTemplate.from_messages(
            - LIMITATION: Never use this for internal product questions.
 
         **DECISION LOGIC (Follow in Order):**
-        1. **CHECK FOR COMPLETION:** Did a tool just run and return a success message (like "COD_SUCCESS" or "Order Confirmed")? If yes -> Route to `__end__`.
+        1. **CHECK FOR COMPLETION:** Did a tool just run and return a success message (like "COD_SUCCESS")? If yes -> Route to `__end__`.
         2. **CHECK FOR CONTEXT:** Look at the *previous* AI message. 
            - Did the AI ask "What is your name?" -> Route user's answer to `sales_agent`.
-           - Did the AI ask "What size?" -> Route user's answer to `sales_agent`.
         3. **CHECK FOR INTENT:**
            - "I want to buy [Product]" -> `sales_agent`.
-           - "Tell me about [Product]" -> `data_query_agent`.
-        4. **CHECK FOR COMPOSITE MESSAGES:** - "Is [Product] in stock? I want to buy it." -> Route to `sales_agent` (Buying overrides browsing).
+           - "Show me [Category/Product]" -> `data_query_agent`.
+        4. **CHECK FOR COMPOSITE MESSAGES:** "Is [Product] in stock? I want to buy it." -> Route to `sales_agent` (Buying overrides browsing).
 
         **OUTPUT:**
         You must call the 'route' tool with the correct `next_node`.
