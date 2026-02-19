@@ -41,5 +41,8 @@ Thumbs.db
 # Keep Excel files out of git — load from cloud or volume
 *.xlsx
 
-# === FAISS Index (regenerate with rag_indexer.py) ===
+# === FAISS Index
+# FAISS Vector Database
 faiss_index/
+*.faiss
+*.pkl

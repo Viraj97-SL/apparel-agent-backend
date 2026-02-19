@@ -29,5 +29,11 @@ RUN mkdir -p uploaded_images
 # 8. Define Environment Variables
 ENV PYTHONUNBUFFERED=1
 
-# 9. Run the Application
+# --- 9. NEW: Build the FAISS Vector Database ---
+# This generates the faiss_index folder inside the container before it starts,
+# fixing the 'NoneType' ainvoke error.
+RUN python app/rag_indexer.py
+
+# 10. Run the Application
+# Using shell format so ${PORT} expands correctly on Railway
 CMD uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}
