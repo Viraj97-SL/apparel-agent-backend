@@ -1,10 +1,10 @@
 # === Core Agent Framework ===
-langchain~=0.3.0
-langgraph~=1.0.2
-langchain-core~=1.0.2
-langchain-community~=0.4.1
-langchain-text-splitters~=1.0.0
-langchain-google-genai~=3.0.0
+langchain>=0.3.0,<0.4.0
+langgraph
+langchain-core>=0.3.0,<0.4.0
+langchain-community>=0.3.0,<0.4.0
+langchain-text-splitters
+langchain-google-genai
 langchain-groq
 langchain-mcp-adapters
 langgraph-checkpoint-sqlite
