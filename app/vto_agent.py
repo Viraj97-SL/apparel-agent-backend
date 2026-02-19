@@ -13,7 +13,9 @@ from app.models import Product
 load_dotenv()
 
 # --- CONFIGURATION ---
-CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694934/apparel_bot_products/"
+# ✅ AFTER
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "")
+CLOUDINARY_BASE_URL = f"https://res.cloudinary.com/{CLOUDINARY_CLOUD_NAME}/image/upload/v1765694934/apparel_bot_products/"
 
 vto_sessions: Dict[str, dict] = {}
 user_usage_tracker: Dict[str, dict] = {}

@@ -10,7 +10,7 @@ load_dotenv()
 # --- CONFIGURATION ---
 # Ensure these are set in your .env or Railway Variables
 cloudinary.config(
-    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME", "dkftnrrjq"),
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
     api_key=os.getenv("CLOUDINARY_API_KEY"),
     api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )

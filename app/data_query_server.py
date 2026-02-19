@@ -12,7 +12,9 @@ from app.database import SessionLocal
 load_dotenv(verbose=False)
 mcp = FastMCP("data_query")
 
-CLOUDINARY_BASE_URL = "https://res.cloudinary.com/dkftnrrjq/image/upload/v1/apparel_bot_products/"
+# ✅ AFTER (from environment)
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "")
+CLOUDINARY_BASE_URL = f"https://res.cloudinary.com/{CLOUDINARY_CLOUD_NAME}/image/upload/v1/apparel_bot_products/"
 
 
 def clean_image_url(raw_url):
