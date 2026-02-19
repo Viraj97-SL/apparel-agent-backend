@@ -21,6 +21,7 @@ aiosqlite
 # === AI & Data ===
 faiss-cpu
 sentence-transformers
+langchain-huggingface
 tiktoken
 pandas
 openpyxl
