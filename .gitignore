@@ -1,20 +1,45 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
 
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# === Environment ===
 .env
+.env.local
+.env.production
+venv/
+env/
+.venv/
 
-product_images/
+# === Database & Runtime Files ===
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
 
+# === Uploaded/Generated Files ===
 uploaded_images/
-
-.env
-
 product_images/
+temp_*.jpg
 
-uploaded_images/
+# === OS Files ===
+.DS_Store
+Thumbs.db
 
-.env
+# === Data Files (tracked separately or too large) ===
+# Keep Excel files out of git — load from cloud or volume
+*.xlsx
 
-product_images/
-
-uploaded_images/
-
-.env
+# === FAISS Index (regenerate with rag_indexer.py) ===
+faiss_index/
