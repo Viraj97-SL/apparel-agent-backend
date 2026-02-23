@@ -1,470 +1,609 @@
-/* app/Chat.module.css */
+/* ======================================================================
+   Chat.module.css — Pamorya AI Stylist
+   Design language: Luxury dark, champagne gold, glassmorphism
+   ====================================================================== */
 
-/* --- 1. CORE VARIABLES (Modern Luxury) --- */
-
+/* ── 1. DESIGN TOKENS ─────────────────────────────────────────────────── */
 .container {
-  /* Background: Deep "Void" Black */
-  --bg-deep: #000000;
-  --bg-gradient: radial-gradient(circle at 50% 0%, #1c1c1c 0%, #000000 80%);
+    --bg-deep:           #000000;
+    --bg-gradient:       radial-gradient(circle at 50% 0%, #161616 0%, #000000 75%);
+    --gold-primary:      #E8D3A8;
+    --gold-secondary:    #C4A874;
+    --gold-glow:         rgba(232, 211, 168, 0.25);
+    --gold-subtle:       rgba(232, 211, 168, 0.08);
+    --glass-dark:        rgba(8, 8, 8, 0.88);
+    --glass-border:      rgba(232, 211, 168, 0.12);
+    --text-primary:      #e8e8e8;
+    --text-muted:        #888;
+    --radius-lg:         16px;
+    --radius-sm:         8px;
+    --transition:        0.2s ease;
 
-  /* New Color: "Champagne Gold" (Lighter, modern, metallic) */
-  --gold-primary: #E8D3A8;
-  --gold-secondary: #C4A874;
-  --gold-glow: rgba(232, 211, 168, 0.3);
-
-  /* Glass Effect */
-  --glass-dark: rgba(10, 10, 10, 0.85);
-  --glass-border: rgba(232, 211, 168, 0.15); /* Faint Champagne */
-
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  width: 100vw;
-  background: var(--bg-gradient);
-  color: #fff;
-  font-family: var(--font-inter), sans-serif;
-  overflow: hidden;
-  position: relative;
+    display:        flex;
+    flex-direction: column;
+    height:         100vh;
+    width:          100vw;
+    background:     var(--bg-gradient);
+    color:          var(--text-primary);
+    font-family:    var(--font-inter), sans-serif;
+    overflow:       hidden;
+    position:       relative;
 }
 
-/* --- 2. HEADER --- */
-
+/* ── 2. HEADER ────────────────────────────────────────────────────────── */
 .header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 15px 30px;
-  z-index: 10;
-  border-bottom: 1px solid rgba(255,255,255,0.05);
+    display:         flex;
+    justify-content: space-between;
+    align-items:     center;
+    padding:         14px 28px;
+    z-index:         10;
+    background:      rgba(0, 0, 0, 0.6);
+    border-bottom:   1px solid var(--glass-border);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    flex-shrink:     0;
 }
 
 .brandContainer {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+    display:     flex;
+    align-items: center;
+    gap:         12px;
 }
 
+/* Pulsing status ring */
 .aiRing {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  border: 2px solid var(--gold-primary);
-  box-shadow: 0 0 10px var(--gold-glow);
-  animation: pulse 3s infinite;
+    width:         10px;
+    height:        10px;
+    border-radius: 50%;
+    border:        2px solid var(--gold-primary);
+    box-shadow:    0 0 8px var(--gold-glow);
+    animation:     pulse 3s infinite;
+    flex-shrink:   0;
 }
 
 .brandName {
-  font-family: var(--font-cinzel), serif;
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-
-  /* Metallic Gradient Text Effect */
-  background: linear-gradient(to right, #E8D3A8, #FFF5D6, #C4A874);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+    font-family:    var(--font-cinzel), serif;
+    font-size:      20px;
+    font-weight:    700;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    background:     linear-gradient(90deg, #E8D3A8, #FFF5DC, #C4A874);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
 }
 
-.modeSelect {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--gold-primary);
-  border: 1px solid var(--glass-border);
-  padding: 8px 12px;
-  border-radius: 20px;
-  font-size: 13px;
-  font-family: var(--font-inter);
-  outline: none;
-  cursor: pointer;
+/* Tab-style mode toggle */
+.modeToggle {
+    display:       flex;
+    background:    rgba(255, 255, 255, 0.04);
+    border:        1px solid var(--glass-border);
+    border-radius: 20px;
+    padding:       3px;
+    gap:           2px;
 }
 
-/* --- 3. MAIN CHAT AREA --- */
+.modeBtn {
+    background:     transparent;
+    color:          var(--text-muted);
+    border:         none;
+    padding:        6px 16px;
+    border-radius:  16px;
+    font-size:      12px;
+    font-family:    var(--font-inter);
+    letter-spacing: 0.5px;
+    cursor:         pointer;
+    transition:     var(--transition);
+    white-space:    nowrap;
+}
 
+.modeBtnActive {
+    background: var(--gold-primary);
+    color:      #000;
+    font-weight: 600;
+}
+
+.modeBtn:not(.modeBtnActive):hover {
+    color: var(--gold-primary);
+}
+
+/* ── 3. CHAT AREA ─────────────────────────────────────────────────────── */
 .chatArea {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  max-width: 800px;
-  width: 95%; /* Wider on mobile */
-  margin: 10px auto 100px auto; /* Bottom margin for ticker */
-  background: var(--glass-dark);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
-  border-radius: 16px;
-  overflow: hidden;
-  position: relative;
-  z-index: 5;
+    flex:           1;
+    display:        flex;
+    flex-direction: column;
+    max-width:      820px;
+    width:          95%;
+    margin:         12px auto 90px auto;
+    background:     var(--glass-dark);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border:         1px solid var(--glass-border);
+    border-radius:  var(--radius-lg);
+    overflow:       hidden;
+    position:       relative;
+    z-index:        5;
+    min-height:     0;
 }
 
+/* Message list (scrollable) */
 .messageList {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+    flex:       1;
+    overflow-y: auto;
+    padding:    24px 20px 16px;
+    display:    flex;
+    flex-direction: column;
+    gap:        18px;
+    scroll-behavior: smooth;
 }
 
-.messageList::-webkit-scrollbar {
-  width: 4px;
-}
+.messageList::-webkit-scrollbar { width: 4px; }
+.messageList::-webkit-scrollbar-track { background: transparent; }
+.messageList::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 4px; }
 
-.messageList::-webkit-scrollbar-thumb {
-  background: #333;
-  border-radius: 2px;
-}
-
-/* Empty State */
-
+/* ── 4. EMPTY STATE ───────────────────────────────────────────────────── */
 .emptyState {
-  text-align: center;
-  margin-top: 20vh;
-  color: #666;
-  padding: 0 20px;
+    text-align: center;
+    margin-top: 15vh;
+    color:      var(--text-muted);
+    padding:    0 20px;
 }
 
 .emptyState h1 {
-  font-family: var(--font-cinzel);
-  color: var(--gold-primary);
-  font-size: 1.8rem;
-  margin-bottom: 8px;
+    font-family:    var(--font-cinzel);
+    color:          var(--gold-primary);
+    font-size:      1.9rem;
+    margin-bottom:  8px;
+    letter-spacing: 1px;
 }
 
-/* Messages */
+.emptyState p {
+    font-size:     14px;
+    line-height:   1.7;
+    margin-bottom: 24px;
+    color:         #666;
+}
 
+/* Quick suggestion chips */
+.suggestionChips {
+    display:         flex;
+    flex-wrap:       wrap;
+    justify-content: center;
+    gap:             10px;
+    margin-top:      4px;
+}
+
+.chip {
+    background:     var(--gold-subtle);
+    color:          var(--gold-primary);
+    border:         1px solid var(--glass-border);
+    padding:        8px 16px;
+    border-radius:  20px;
+    font-size:      13px;
+    font-family:    var(--font-inter);
+    cursor:         pointer;
+    transition:     var(--transition);
+    white-space:    nowrap;
+}
+
+.chip:hover {
+    background: rgba(232, 211, 168, 0.15);
+    border-color: var(--gold-secondary);
+    transform: translateY(-1px);
+}
+
+/* ── 5. MESSAGES ─────────────────────────────────────────────────────── */
 .messageRow {
-  display: flex;
-  width: 100%;
-  animation: fadeUp 0.3s ease;
+    display:   flex;
+    width:     100%;
+    animation: fadeUp 0.25s ease;
 }
 
-.userRow {
-  justify-content: flex-end;
-}
-
-.aiRow {
-  justify-content: flex-start;
-}
+.userRow { justify-content: flex-end; }
+.aiRow   { justify-content: flex-start; }
 
 .bubble {
-  max-width: 85%;
-  line-height: 1.5;
-  font-size: 15px;
+    max-width:   82%;
+    line-height: 1.6;
+    font-size:   14.5px;
 }
 
 .userBubble {
-  background: rgba(255, 255, 255, 0.08);
-  color: white;
-  padding: 10px 16px;
-  border-radius: 12px 12px 0 12px;
-  border: 1px solid rgba(255,255,255,0.05);
+    background:    rgba(255, 255, 255, 0.07);
+    color:         #f0f0f0;
+    padding:       10px 16px;
+    border-radius: 14px 14px 0 14px;
+    border:        1px solid rgba(255, 255, 255, 0.06);
 }
 
 .aiBubble {
-  padding-left: 12px;
-  border-left: 2px solid var(--gold-primary);
-  color: #ddd;
+    padding-left: 14px;
+    border-left:  2px solid var(--gold-primary);
+    color:        var(--text-primary);
 }
 
 .aiName {
-  display: block;
-  color: var(--gold-primary);
-  font-family: var(--font-cinzel);
-  font-size: 12px;
-  margin-bottom: 4px;
-  font-weight: bold;
-  letter-spacing: 0.5px;
+    display:        block;
+    color:          var(--gold-primary);
+    font-family:    var(--font-cinzel);
+    font-size:      11px;
+    margin-bottom:  6px;
+    font-weight:    600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
 }
 
+/* ── 6. TYPING DOTS ──────────────────────────────────────────────────── */
+.typingDots {
+    display:     inline-flex;
+    align-items: center;
+    gap:         5px;
+    padding:     4px 0;
+}
+
+.typingDots span {
+    width:         7px;
+    height:        7px;
+    border-radius: 50%;
+    background:    var(--gold-secondary);
+    opacity:       0.4;
+    animation:     dotBounce 1.2s ease-in-out infinite;
+}
+
+.typingDots span:nth-child(1) { animation-delay: 0s; }
+.typingDots span:nth-child(2) { animation-delay: 0.2s; }
+.typingDots span:nth-child(3) { animation-delay: 0.4s; }
+
+/* ── 7. PRODUCT GALLERY ──────────────────────────────────────────────── */
 .productImage {
-  margin-top: 10px;
-  border: 1px solid #333;
-  border-radius: 6px;
-  max-width: 100%; /* Responsive Image */
-  height: auto;
-  display: block;
+    margin-top:    10px;
+    border:        1px solid #2a2a2a;
+    border-radius: var(--radius-sm);
+    max-width:     220px;
+    height:        auto;
+    display:       block;
+    object-fit:    cover;
 }
 
-/* --- 4. INPUT AREA --- */
+.galleryContainer {
+    position:      relative;
+    margin-top:    12px;
+    display:       inline-block;
+    max-width:     240px;
+    border-radius: var(--radius-sm);
+    overflow:      hidden;
+    border:        1px solid #2a2a2a;
+}
 
+.galleryImage {
+    display:    block;
+    width:      240px;
+    height:     300px;
+    object-fit: cover;
+    cursor:     pointer;
+    transition: opacity 0.2s ease;
+}
+
+/* Prev / next arrow buttons */
+.galleryArrow {
+    position:      absolute;
+    top:           50%;
+    transform:     translateY(-50%);
+    background:    rgba(0, 0, 0, 0.55);
+    color:         var(--gold-primary);
+    border:        none;
+    width:         28px;
+    height:        28px;
+    border-radius: 50%;
+    font-size:     18px;
+    line-height:   1;
+    cursor:        pointer;
+    display:       flex;
+    align-items:   center;
+    justify-content: center;
+    z-index:       2;
+    transition:    background var(--transition);
+    padding:       0;
+}
+
+.galleryArrow:hover { background: rgba(0, 0, 0, 0.8); }
+.galleryArrowLeft  { left: 6px; }
+.galleryArrowRight { right: 6px; }
+
+/* Dot indicators */
+.dotsContainer {
+    position:       absolute;
+    bottom:         8px;
+    left:           50%;
+    transform:      translateX(-50%);
+    display:        flex;
+    gap:            5px;
+    align-items:    center;
+}
+
+.dot {
+    width:         7px;
+    height:        7px;
+    border-radius: 50%;
+    background:    rgba(255, 255, 255, 0.35);
+    border:        none;
+    cursor:        pointer;
+    padding:       0;
+    transition:    background var(--transition), transform var(--transition);
+}
+
+.dotActive {
+    background: var(--gold-primary);
+    transform:  scale(1.2);
+}
+
+.galleryCounter {
+    position:    absolute;
+    top:         8px;
+    right:       8px;
+    background:  rgba(0, 0, 0, 0.6);
+    color:       rgba(255, 255, 255, 0.8);
+    padding:     2px 7px;
+    border-radius: 10px;
+    font-size:   10px;
+    pointer-events: none;
+}
+
+/* ── 8. INPUT AREA ───────────────────────────────────────────────────── */
 .inputContainer {
-  padding: 15px;
-  background: rgba(0,0,0,0.6);
-  border-top: 1px solid var(--glass-border);
+    padding:     12px 16px;
+    background:  rgba(0, 0, 0, 0.65);
+    border-top:  1px solid var(--glass-border);
+    flex-shrink: 0;
 }
 
+/* File preview with thumbnail */
 .filePreview {
-  font-size: 11px;
-  color: var(--gold-primary);
-  margin-bottom: 8px;
-  background: rgba(232, 211, 168, 0.1);
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 8px;
-  border-radius: 6px;
+    display:       flex;
+    align-items:   center;
+    gap:           10px;
+    margin-bottom: 10px;
+    background:    var(--gold-subtle);
+    border:        1px solid var(--glass-border);
+    border-radius: var(--radius-sm);
+    padding:       6px 10px;
 }
 
+.fileThumb {
+    width:         40px;
+    height:        40px;
+    object-fit:    cover;
+    border-radius: 4px;
+    flex-shrink:   0;
+}
+
+.fileName {
+    font-size: 12px;
+    color:     var(--gold-primary);
+    flex:      1;
+    overflow:  hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.clearFile {
+    background:  none;
+    border:      none;
+    color:       var(--text-muted);
+    font-size:   18px;
+    line-height: 1;
+    cursor:      pointer;
+    padding:     0 2px;
+    flex-shrink: 0;
+}
+
+.clearFile:hover { color: #fff; }
+
+/* Input row */
 .inputForm {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  background: rgba(255,255,255,0.03);
-  padding: 8px 12px;
-  border-radius: 30px;
-  border: 1px solid rgba(255,255,255,0.1);
+    display:       flex;
+    gap:           10px;
+    align-items:   center;
+    background:    rgba(255, 255, 255, 0.04);
+    padding:       8px 14px;
+    border-radius: 30px;
+    border:        1px solid var(--glass-border);
+    transition:    border-color var(--transition);
+}
+
+.inputForm:focus-within {
+    border-color: rgba(232, 211, 168, 0.3);
 }
 
 .textInput {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: white;
-  font-size: 16px;
-  outline: none;
+    flex:       1;
+    background: transparent;
+    border:     none;
+    color:      #fff;
+    font-size:  15px;
+    outline:    none;
+    min-width:  0;
 }
+
+.textInput::placeholder { color: #555; }
 
 .attachButton {
-  background: none;
-  border: none;
-  color: #666;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
+    background: none;
+    border:     none;
+    color:      #555;
+    cursor:     pointer;
+    display:    flex;
+    align-items: center;
+    padding:    0;
+    transition: color var(--transition);
+    flex-shrink: 0;
 }
 
-.attachButton:hover {
-  color: var(--gold-primary);
-}
+.attachButton:hover { color: var(--gold-primary); }
 
 .sendButton {
-  background: var(--gold-primary);
-  color: #000;
-  border: none;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: 0.2s;
+    background:    var(--gold-primary);
+    color:         #000;
+    border:        none;
+    width:         34px;
+    height:        34px;
+    border-radius: 50%;
+    cursor:        pointer;
+    display:       flex;
+    align-items:   center;
+    justify-content: center;
+    transition:    box-shadow var(--transition), opacity var(--transition);
+    flex-shrink:   0;
 }
 
-.sendButton:hover {
-  box-shadow: 0 0 10px var(--gold-glow);
+.sendButton:hover:not(:disabled) {
+    box-shadow: 0 0 14px var(--gold-glow);
 }
 
 .sendButton:disabled {
-  opacity: 0.5;
-  cursor: default;
+    opacity: 0.4;
+    cursor:  default;
 }
 
-/* --- 5. TICKER (Footer) --- */
-
+/* ── 9. PRODUCT TICKER ───────────────────────────────────────────────── */
 .tickerWrap {
-  position: fixed;
-  bottom: 0;
-  width: 100%;
-  height: 80px; /* Smaller height */
-  background: rgba(0,0,0,0.95);
-  border-top: 1px solid var(--glass-border);
-  display: flex;
-  align-items: center;
-  overflow: hidden;
-  z-index: 20;
+    position:    fixed;
+    bottom:      0;
+    width:       100%;
+    height:      76px;
+    background:  rgba(0, 0, 0, 0.96);
+    border-top:  1px solid var(--glass-border);
+    display:     flex;
+    align-items: center;
+    overflow:    hidden;
+    z-index:     20;
 }
 
 .ticker {
-  display: flex;
-  animation: scroll 40s linear infinite;
+    display:   flex;
+    animation: scroll 45s linear infinite;
 }
 
 .tickerItem {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-right: 40px;
-  opacity: 0.7;
-  cursor: pointer;
+    display:     flex;
+    align-items: center;
+    gap:         10px;
+    margin-right: 40px;
+    opacity:     0.65;
+    cursor:      pointer;
+    transition:  opacity var(--transition);
+    outline:     none;
 }
 
-.tickerItem:hover {
-  opacity: 1;
-}
+.tickerItem:hover,
+.tickerItem:focus { opacity: 1; }
 
 .tickerItem img {
-  width: 45px;
-  height: 45px;
-  object-fit: cover;
-  border: 1px solid #333;
-  border-radius: 4px;
+    width:         48px;
+    height:        48px;
+    object-fit:    cover;
+    border:        1px solid #2a2a2a;
+    border-radius: 6px;
+    flex-shrink:   0;
 }
 
-.tickerItem span {
-  font-family: var(--font-cinzel);
-  font-size: 12px;
-  color: var(--gold-primary);
-  white-space: nowrap;
+.tickerInfo {
+    display:        flex;
+    flex-direction: column;
+    gap:            2px;
 }
 
-/* --- 6. TOASTS --- */
-
-.toastContainer {
-  position: fixed;
-  top: 60px; /* moved down slightly */
-  right: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  z-index: 100;
+.tickerName {
+    font-family:    var(--font-cinzel);
+    font-size:      11px;
+    color:          var(--gold-primary);
+    white-space:    nowrap;
+    letter-spacing: 0.3px;
 }
 
-.toast {
-  background: rgba(15, 15, 15, 0.95);
-  border-left: 2px solid var(--gold-primary);
-  padding: 12px;
-  width: 260px;
-  border-radius: 4px;
-  box-shadow: -5px 5px 20px rgba(0,0,0,0.5);
-  animation: slideIn 0.5s ease;
+.tickerPrice {
+    font-size:   10px;
+    color:       var(--text-muted);
+    white-space: nowrap;
 }
 
-.toast h4 {
-  color: var(--gold-primary);
-  margin: 0 0 4px 0;
-  font-size: 13px;
-  font-family: var(--font-cinzel);
-}
-
-.toast p {
-  font-size: 11px;
-  margin: 0;
-  color: #aaa;
-}
-
-/* --- ANIMATIONS --- */
-
+/* ── 10. ANIMATIONS ──────────────────────────────────────────────────── */
 @keyframes pulse {
-  0% { box-shadow: 0 0 0 0 var(--gold-glow); }
-  70% { box-shadow: 0 0 0 6px rgba(0,0,0,0); }
-  100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+    0%   { box-shadow: 0 0 0 0 var(--gold-glow); }
+    70%  { box-shadow: 0 0 0 7px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
 }
 
 @keyframes scroll {
-  0% { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
+    0%   { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
 }
 
 @keyframes fadeUp {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes slideIn {
-  from { opacity: 0; transform: translateX(50px); }
-  to { opacity: 1; transform: translateX(0); }
+@keyframes dotBounce {
+    0%, 80%, 100% { transform: scale(0.6); opacity: 0.35; }
+    40%            { transform: scale(1.1); opacity: 1;    }
 }
 
-/* ------------------------------------------- */
-/* 📱 MOBILE RESPONSIVENESS (The Magic Part) */
-/* ------------------------------------------- */
-
-/* 📱 MOBILE RESPONSIVENESS FIX */
+/* ── 11. MOBILE ──────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
-  /* Header: Stack or shrink */
-  .header {
-    padding: 10px 15px;
-    height: 60px; /* Fixed height for calculation */
-  }
+    .header {
+        padding: 10px 14px;
+        height:  56px;
+    }
 
-  .brandName {
-    font-size: 16px;
-  }
+    .brandName { font-size: 16px; letter-spacing: 1.5px; }
 
-  .modeSelect {
-    padding: 6px 10px;
-    font-size: 11px;
-  }
+    .modeBtn { padding: 5px 12px; font-size: 11px; }
 
-  /* Chat Area: Lift it up so Ticker doesn't cover input */
-  .chatArea {
-    width: 100%;
-    border-radius: 0;
-    border: none;
+    .chatArea {
+        width:         100%;
+        border-radius: 0;
+        border:        none;
+        height:        calc(100dvh - 56px - 64px);
+        margin:        0 0 64px 0;
+    }
 
-    /* CRITICAL FIX: */
-    /* Use 'dvh' (dynamic viewport height) to handle mobile URL bars */
-    /* Minus 60px (Header) and 70px (Ticker space) */
-    height: calc(100dvh - 130px);
+    .messageList { padding: 14px 14px 10px; gap: 14px; }
 
-    /* Add margin at bottom so it floats ABOVE the ticker */
-    margin: 0 0 70px 0;
-  }
+    .bubble { max-width: 90%; font-size: 14px; }
 
-  .messageList {
-    padding: 15px;
-  }
+    .emptyState { margin-top: 12vh; }
+    .emptyState h1 { font-size: 1.5rem; }
 
-  .bubble {
-    max-width: 88%;
-    font-size: 14px;
-  }
+    .suggestionChips { gap: 8px; }
+    .chip { font-size: 12px; padding: 7px 13px; }
 
-  /* Input: Make it easier to tap */
-  .inputContainer {
-    padding: 10px;
-  }
+    .galleryImage { width: 200px; height: 250px; }
+    .galleryContainer { max-width: 200px; }
 
-  .inputForm {
-    padding: 8px 12px;
-    background: rgba(255, 255, 255, 0.08); /* Brighter bg for contrast */
-  }
+    .inputContainer { padding: 8px 10px; }
 
-  .textInput {
-    font-size: 16px; /* Prevents iOS zoom on focus */
-  }
+    .inputForm {
+        padding:    7px 12px;
+        background: rgba(255, 255, 255, 0.07);
+    }
 
-  /* SEND BUTTON: Bigger & High Contrast */
-  .sendButton {
-    width: 42px; /* Bigger touch target */
-    height: 42px;
-    background: var(--gold-primary); /* Solid Gold background */
-    color: #000; /* Black icon */
-    border-radius: 50%;
-    box-shadow: 0 0 10px rgba(0,0,0,0.5);
-  }
+    .textInput { font-size: 16px; } /* prevent iOS zoom */
 
-  /* Ticker: Fixed at bottom */
-  .tickerWrap {
-    height: 60px;
-    bottom: 0; /* Ensure it sticks to bottom */
-    z-index: 50; /* Ensure it stays on top */
-  }
+    .sendButton { width: 40px; height: 40px; }
 
-  .tickerItem img {
-    width: 35px;
-    height: 35px;
-  }
+    .tickerWrap { height: 64px; }
 
-  .tickerItem span {
-    font-size: 10px;
-  }
-
-  /* Toasts: Move out of the way */
-  .toastContainer {
-    top: 70px;
-    left: 10px;
-    right: 10px;
-    width: auto;
-  }
+    .tickerItem img { width: 38px; height: 38px; }
+    .tickerName { font-size: 10px; }
+    .tickerPrice { font-size: 9px; }
 }
 
-/* Desktop Full-Width Fix */
+/* ── 12. DESKTOP FULL-WIDTH ──────────────────────────────────────────── */
 @media (min-width: 769px) {
-  .chatArea {
-    max-width: 100%;
-    width: 100%;
-    margin: 10px 0 100px 0; /* Remove side auto margins */
-  }
+    .chatArea {
+        max-width: 100%;
+        width:     100%;
+        margin:    12px 0 90px 0;
+    }
 }
