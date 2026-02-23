@@ -1,52 +1,79 @@
-import uvicorn
-import uuid
-import shutil
+import asyncio
 import os
+import re
+import shutil
 import traceback
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, Form, Request
+import uvicorn
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
-from langchain_core.messages import HumanMessage, AIMessage
 
 # --- DB IMPORTS ---
 from app.db_builder import init_db, populate_initial_data
 
 # --- SECURITY: Rate Limiting ---
 from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 # --- AGENT IMPORTS ---
 from app.agent import app as rag_agent_app
 from app.vto_agent import handle_vto_message
 
-# --- CONFIGURATION ---
+# ---------------------------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------------------------
 UPLOAD_DIR = "uploaded_images"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-DB_PATH = "apparel.db"
 
-# SECURITY: Allowed file types and Max Size (5MB)
+# SECURITY: Allowed file types and max size (5 MB)
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "avif"}
-MAX_FILE_SIZE = 5 * 1024 * 1024
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
+
+# Input guardrails
+MAX_QUERY_LENGTH = 2_000           # characters
+AGENT_TIMEOUT_SECONDS = 90         # cap a single agent run
+
+# CORS — restrict to known origins; override via env for flexibility
+_raw_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "https://apparel-agent-frontend.vercel.app,http://localhost:3000,http://localhost:8000",
+)
+ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
+# Patterns that look like prompt-injection attempts
+_INJECTION_PATTERNS = re.compile(
+    r"(ignore (previous|all|prior|above) instructions?|"
+    r"you are now|forget (your|all) (instructions?|rules?)|"
+    r"system prompt|act as (an? )?[a-z]+|jailbreak|"
+    r"do anything now|dan mode)",
+    re.IGNORECASE,
+)
 
 
-# --- LIFESPAN MANAGER ---
+# ---------------------------------------------------------------------------
+# LIFESPAN MANAGER
+# ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🔄 Lifespan: Checking database status...")
     try:
         init_db()
         populate_initial_data()
-    except Exception as e:
-        print(f"❌ Startup Error: {e}")
+    except Exception as exc:
+        print(f"❌ Startup Error: {exc}")
     yield
     print("🛑 Shutdown: Server closing...")
 
 
-# --- INITIALIZE APP ---
+# ---------------------------------------------------------------------------
+# INITIALIZE APP
+# ---------------------------------------------------------------------------
 limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(
@@ -55,8 +82,8 @@ app = FastAPI(
     lifespan=lifespan,
     servers=[
         {"url": "https://apparel-agent-backend-production.up.railway.app", "description": "Production Server"},
-        {"url": "http://localhost:8000", "description": "Local Development"}
-    ]
+        {"url": "http://localhost:8000", "description": "Local Development"},
+    ],
 )
 
 app.state.limiter = limiter
@@ -68,77 +95,200 @@ app.mount("/product_images", StaticFiles(directory="product_images"), name="prod
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
+# ---------------------------------------------------------------------------
+# RESPONSE MODEL
+# ---------------------------------------------------------------------------
 class OutputChat(BaseModel):
     response: str
     thread_id: str
 
 
-# --- THE CHAT ENDPOINT ---
+# ---------------------------------------------------------------------------
+# STALE-STATE RESOLVER
+# Fix: when MCP tool retries under DB pressure the checkpointer persists
+# an intermediate AIMessage that has tool_calls but no matching ToolMessages.
+# If the user sends Q2 before Q1 finishes, LangGraph resumes that stale
+# checkpoint and returns Q1's answer for Q2.
+#
+# This resolver detects the dirty state and injects synthetic cleanup
+# ToolMessages so the graph reaches a clean handoff point before Q2 runs.
+# ---------------------------------------------------------------------------
+async def resolve_stale_state(config: dict) -> bool:
+    """
+    Inspect the current checkpoint for a thread.
+    If the last persisted message is an AIMessage with unresolved tool_calls
+    (i.e. no matching ToolMessage was ever appended), inject cleanup
+    ToolMessages to force a known-good state before processing new input.
+
+    Returns True if a stale state was detected and patched.
+    """
+    try:
+        snapshot = await rag_agent_app.aget_state(config)
+        if not snapshot or not snapshot.values:
+            return False
+
+        messages = snapshot.values.get("messages", [])
+        if not messages:
+            return False
+
+        last_msg = messages[-1]
+
+        # A stale state: the last saved message is an AI turn that generated
+        # tool calls but the run was interrupted before ToolMessages arrived.
+        if not (isinstance(last_msg, AIMessage) and getattr(last_msg, "tool_calls", None)):
+            return False
+
+        # Verify there is truly no ToolMessage covering these tool_call ids
+        pending_ids = {tc["id"] for tc in last_msg.tool_calls}
+        covered_ids = {
+            m.tool_call_id
+            for m in messages
+            if isinstance(m, ToolMessage) and hasattr(m, "tool_call_id")
+        }
+        unresolved = pending_ids - covered_ids
+        if not unresolved:
+            return False
+
+        print(
+            f"⚠️  Stale state on thread {config['configurable']['thread_id']}: "
+            f"{len(unresolved)} unresolved tool call(s). Injecting cleanup..."
+        )
+
+        cleanup_messages = [
+            ToolMessage(
+                content=(
+                    "[Previous request was interrupted before completing. "
+                    "The following message is a fresh question.]"
+                ),
+                tool_call_id=tc_id,
+            )
+            for tc_id in unresolved
+        ]
+
+        await rag_agent_app.aupdate_state(config, {"messages": cleanup_messages})
+        print("✅ Stale state resolved — clean handoff point established.")
+        return True
+
+    except Exception as exc:
+        # Non-fatal: log and continue.  A stale state is better than a crash.
+        print(f"⚠️  resolve_stale_state error (non-fatal): {exc}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# INPUT VALIDATION
+# ---------------------------------------------------------------------------
+def validate_query(query: str) -> str | None:
+    """
+    Returns an error string if the query fails validation, else None.
+    Checks: empty, too long, obvious prompt-injection patterns.
+    """
+    stripped = query.strip()
+    if not stripped:
+        return "Please enter a message."
+    if len(stripped) > MAX_QUERY_LENGTH:
+        return f"Your message is too long (max {MAX_QUERY_LENGTH} characters). Please shorten it."
+    if _INJECTION_PATTERNS.search(stripped):
+        return (
+            "I'm sorry, I can only help with Pamorya clothing questions. "
+            "Please ask about our products, orders, or store policies."
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# CHAT ENDPOINT
+# ---------------------------------------------------------------------------
 @app.post("/chat", response_model=OutputChat)
 @limiter.limit("50/minute")
 async def chat(
-        request: Request,
-        query: str = Form(...),
-        thread_id: str = Form(None),
-        mode: str = Form("standard"),
-        file: UploadFile = File(None)
+    request: Request,
+    query: str = Form(...),
+    thread_id: str = Form(None),
+    mode: str = Form("standard"),
+    file: UploadFile = File(None),
 ):
     # 1. Ensure Thread ID
     if not thread_id:
         thread_id = str(uuid.uuid4())
 
+    # 2. Input validation
+    validation_error = validate_query(query)
+    if validation_error:
+        return OutputChat(response=validation_error, thread_id=thread_id)
+
     image_path = None
 
-    # --- SECURITY: File Validation ---
+    # 3. SECURITY: File validation
     if file:
         file.file.seek(0, 2)
         size = file.file.tell()
         file.file.seek(0)
         if size > MAX_FILE_SIZE:
-            return OutputChat(response="Error: Image is too large.", thread_id=thread_id)
+            return OutputChat(response="Error: Image is too large (max 5 MB).", thread_id=thread_id)
         filename = file.filename.lower()
         ext = filename.split(".")[-1] if "." in filename else ""
         if ext not in ALLOWED_EXTENSIONS:
-            return OutputChat(response="Error: Invalid file type.", thread_id=thread_id)
+            return OutputChat(
+                response=f"Error: Invalid file type '.{ext}'. Accepted: jpg, jpeg, png, webp, avif.",
+                thread_id=thread_id,
+            )
         safe_filename = f"{uuid.uuid4()}.{ext}"
         file_location = os.path.join(UPLOAD_DIR, safe_filename)
-        with open(file_location, "wb+") as file_object:
-            shutil.copyfileobj(file.file, file_object)
+        with open(file_location, "wb+") as fobj:
+            shutil.copyfileobj(file.file, fobj)
         image_path = file_location
 
-    # --- AGENT LOGIC ---
-    # 🟢 FIX 1: Default to None, not "Error..."
-    final_response = None
+    # 4. Agent logic
+    final_response: str | None = None
 
     try:
         if mode == "vto":
             print(f"--- VTO MODE [Thread: {thread_id}] ---")
             final_response = handle_vto_message(thread_id, query, image_path)
+
         else:
             print(f"--- STANDARD MODE [Thread: {thread_id}] ---")
             config = {"configurable": {"thread_id": thread_id}}
+
+            # ----------------------------------------------------------------
+            # FIX: Resolve stale state BEFORE processing the new message.
+            # If a previous run was interrupted mid-tool-call the checkpoint
+            # holds an AIMessage with dangling tool_calls.  Without cleanup,
+            # LangGraph would resume that stale state and return Q1's answer
+            # for Q2.  The resolver injects synthetic ToolMessages to close
+            # the open tool call so the graph starts fresh for this message.
+            # ----------------------------------------------------------------
+            await resolve_stale_state(config)
+
             input_message = [HumanMessage(content=query)]
 
-            # 🟢 FIX 2: Iterate through the ENTIRE stream.
-            # We keep updating 'final_response' every time we see a new text message.
-            # We do NOT break early. We wait for the Supervisor to finish.
-            async for event in rag_agent_app.astream({"messages": input_message}, config=config, stream_mode="values"):
-                new_messages = event.get("messages", [])
-                if new_messages:
+            # ----------------------------------------------------------------
+            # FIX: asyncio.timeout caps slow runs instead of letting them hang
+            # indefinitely.  A TimeoutError is caught below and surfaced as a
+            # friendly message; the interrupted state will be cleaned up the
+            # next time resolve_stale_state runs.
+            # ----------------------------------------------------------------
+            async with asyncio.timeout(AGENT_TIMEOUT_SECONDS):
+                async for event in rag_agent_app.astream(
+                    {"messages": input_message},
+                    config=config,
+                    stream_mode="values",
+                ):
+                    new_messages = event.get("messages", [])
+                    if not new_messages:
+                        continue
                     last_message = new_messages[-1]
 
-                    # Check if it's an AI Message with actual text (not just tool calls)
                     if isinstance(last_message, AIMessage) and last_message.content:
                         raw_content = last_message.content
-
-                        # Handle content being a string or a list of blocks
                         text_content = ""
                         if isinstance(raw_content, str):
                             text_content = raw_content
@@ -147,19 +297,27 @@ async def chat(
                                 if isinstance(part, dict) and "text" in part:
                                     text_content += part["text"]
 
-                        # Only update if we found actual text (ignoring empty strings from tool calls)
                         if text_content.strip():
                             final_response = text_content
 
-    except Exception as e:
-        error_msg = f"INTERNAL ERROR: {str(e)}"
-        print(f"❌ {error_msg}")
+    except asyncio.TimeoutError:
+        print(f"⏱️  Agent timed out after {AGENT_TIMEOUT_SECONDS}s [Thread: {thread_id}]")
+        final_response = (
+            "I'm taking a bit longer than usual on that one — sorry about that! "
+            "Please try asking again in a moment."
+        )
+
+    except Exception as exc:
+        print(f"❌ INTERNAL ERROR [Thread: {thread_id}]: {exc}")
         traceback.print_exc()
         final_response = "I encountered a temporary error. Please try asking again."
 
-    # 🟢 FIX 3: Fallback only if absolutely nothing was returned after the whole process
+    # 5. Fallback if no response was collected
     if not final_response:
-        final_response = "I processed your request, but I didn't get a text response. Please check your order status."
+        final_response = (
+            "I processed your request but didn't receive a text response. "
+            "Please try rephrasing your question."
+        )
 
     return OutputChat(response=final_response, thread_id=thread_id)
 

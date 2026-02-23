@@ -8,6 +8,7 @@ langchain-google-genai
 langchain-groq
 langchain-mcp-adapters
 langgraph-checkpoint-sqlite
+langgraph-checkpoint-postgres
 
 # === Backend & Database ===
 fastapi
@@ -16,6 +17,7 @@ slowapi
 pydantic
 sqlalchemy
 psycopg2-binary
+psycopg[binary,pool]
 aiosqlite
 
 # === AI & Data ===
@@ -35,3 +37,8 @@ mcp
 python-dotenv
 nest_asyncio
 langsmith
+
+# === Testing ===
+pytest
+pytest-asyncio
+httpx

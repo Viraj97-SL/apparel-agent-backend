@@ -17,7 +17,7 @@ from app.sales_tools import create_draft_order, confirm_order_details
 
 # --- LangGraph Imports ---
 from langgraph.graph import StateGraph, END
-# Use AsyncSqliteSaver for async support
+# Use AsyncSqliteSaver for async support (fallback)
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 # For supervisor tool-calling
@@ -394,7 +394,39 @@ workflow.add_edge("web_search_tool_executor", "web_search_agent")
 
 # --- 8. Compile ---
 async def create_memory():
+    """
+    Create the LangGraph checkpointer.
+    Prefers PostgreSQL (survives deploys, handles concurrent writes).
+    Falls back to SQLite for local development.
+    """
+    db_url = os.getenv("DATABASE_URL", "")
+
+    if db_url:
+        try:
+            from psycopg_pool import AsyncConnectionPool
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+            # psycopg3 accepts the standard postgresql:// URL.
+            # Railway may give postgres:// — normalise it.
+            pg_url = db_url.replace("postgres://", "postgresql://")
+
+            pool = AsyncConnectionPool(
+                conninfo=pg_url,
+                max_size=10,
+                open=False,
+                kwargs={"autocommit": True, "prepare_threshold": 0},
+            )
+            await pool.open()
+            checkpointer = AsyncPostgresSaver(pool)
+            # Creates the langgraph_checkpoint* tables if they don't exist
+            await checkpointer.setup()
+            print("✅ Checkpointer: PostgreSQL (persistent, multi-instance safe)")
+            return checkpointer
+        except Exception as exc:
+            print(f"⚠️  PostgreSQL checkpointer unavailable ({exc}). Falling back to SQLite.")
+
     conn = await aiosqlite.connect("checkpoints.db")
+    print("✅ Checkpointer: SQLite (local dev mode)")
     return AsyncSqliteSaver(conn=conn)
 
 
