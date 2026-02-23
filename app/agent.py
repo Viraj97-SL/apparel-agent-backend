@@ -13,7 +13,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 # --- Our Custom Imports ---
 from app.chat_with_rag import create_rag_chain
 # --- NEW IMPORT: Sales Tools ---
-from app.sales_tools import create_draft_order, confirm_order_details
+from app.sales_tools import create_draft_order, confirm_order_details, view_cart, remove_from_cart
 
 # --- LangGraph Imports ---
 from langgraph.graph import StateGraph, END
@@ -95,7 +95,7 @@ async def initialize_tools():
     mcp_tools = await client.get_tools()
 
     # 2. Setup Local Sales Tools (Imported manually)
-    local_sales_tools = [create_draft_order, confirm_order_details]
+    local_sales_tools = [create_draft_order, confirm_order_details, view_cart, remove_from_cart]
 
     return mcp_tools, local_sales_tools, client
 
@@ -165,14 +165,17 @@ async def sales_agent_node(state: AgentState):
     """Calls the WORKER LLM bound to the Sales tools."""
     print("\n--- Calling Sales Agent ---")
 
-    system_prompt = """You are the Sales Agent. Your goal is to secure the order. **PROCESS:**
+    system_prompt = """You are the Sales Agent for Pamorya. Your goal is to secure the order. **PROCESS:**
     1. **Clarify the Order:** Ensure you know the Product Name, Size, and Quantity.
        - Check the immediate conversation history for the product (e.g., if previous messages mention 'Crimson Canvas', use that).
        - If the user responds with just size/quantity (e.g., "Size M, one" or "size: M, Quantity:1"), infer the product from the last discussed item in a buying context.
        - If unclear or multiple items, ask for clarification.
        - If they want multiple items, add them one by one.
+    1.5. **View Cart:** If the user says 'show my cart', 'view cart', or 'what's in my cart' → call `view_cart`.
+    1.6. **Remove from Cart:** If the user says 'remove [item]' or 'delete [item] from cart' → call `remove_from_cart` with the product name.
     2. **Create Draft:** Once you have product, size, and quantity, call 'create_draft_order' with the details.
        - This tool returns the Total Price. Show this to the user.
+    2.5. **Out of Stock:** If the tool returns a message starting with 'OUT_OF_STOCK' → apologise warmly and list the available sizes from the message.
     3. **Get Customer Info:** After the draft is created, ask for: Full Name, Shipping Address, Phone Number.
     4. **Confirm:** If the user provides name, address, and phone (even in one message like "Name:Viraj, Address:Eheliyagoda, Number:071791300"), you MUST parse it and call 'confirm_order_details'.
        - Parse examples:
@@ -180,7 +183,7 @@ async def sales_agent_node(state: AgentState):
          - "Viraj from Eheliyagoda, phone 071791300" -> customer_name='Viraj', address='Eheliyagoda', phone='071791300'
          - If missing or unclear, ask for clarification (e.g., "Could you confirm your full name?").
        - Always include thread_id from history.
-       - If successful, thank them and mention their order is confirmed!
+       - If the tool returns a JSON with status "COD_SUCCESS", relay the order_number and confirmation message to the customer warmly.
     **CRITICAL:** After asking for customer info, your next response MUST be the tool call if details are provided—do not reply without calling 'confirm_order_details'.
     **TONE:** Professional, efficient, and warm. If an error occurs, apologize and suggest alternatives."""
 
@@ -211,7 +214,7 @@ async def data_query_tool_executor_node(state: AgentState, config: RunnableConfi
 
         # 🟢 INJECT THREAD ID:
         # If the tool is a sales tool, pass the thread_id so the DB knows who this is
-        if tool_name in ["create_draft_order", "confirm_order_details"]:
+        if tool_name in ["create_draft_order", "confirm_order_details", "view_cart", "remove_from_cart"]:
             tool_args["thread_id"] = thread_id
 
         print(f" -> Preparing tool: {tool_name} with args {tool_args}")

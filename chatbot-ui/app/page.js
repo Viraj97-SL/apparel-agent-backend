@@ -108,6 +108,65 @@ function ProductGallery({ imagesStr, alt }) {
 }
 
 // ---------------------------------------------------------------------------
+// ORDER RECEIPT CARD
+// ---------------------------------------------------------------------------
+function OrderReceipt({ data }) {
+    return (
+        <div className={styles.orderReceipt}>
+            <div className={styles.orderReceiptTitle}>✅ Order Confirmed</div>
+            <div className={styles.orderReceiptNumber}>Order #{data.order_number}</div>
+            <hr className={styles.orderReceiptDivider} />
+            <ul className={styles.orderReceiptItems}>
+                {data.items.map((item, i) => (
+                    <li key={i} className={styles.orderReceiptItem}>
+                        <span className={styles.orderReceiptItemName}>
+                            {item.qty}x {item.name} ({item.size})
+                        </span>
+                        <span className={styles.orderReceiptItemPrice}>
+                            LKR {item.price.toLocaleString()}
+                        </span>
+                    </li>
+                ))}
+            </ul>
+            <hr className={styles.orderReceiptDivider} />
+            <div className={styles.orderReceiptTotal}>
+                <span>Total</span>
+                <span>LKR {data.total.toLocaleString()}</span>
+            </div>
+            <div className={styles.orderReceiptMeta}>
+                <strong>Delivering to:</strong> {data.customer_name}<br />
+                {data.address} · {data.phone}<br />
+                Payment: Cash on Delivery
+            </div>
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// VTO STEP INDICATOR
+// ---------------------------------------------------------------------------
+function VtoSteps({ step }) {
+    const steps = [
+        { num: '①', label: 'Upload Photo' },
+        { num: '②', label: 'Choose Product' },
+        { num: '③', label: 'Try On!' },
+    ];
+    return (
+        <div className={styles.vtoSteps}>
+            {steps.map((s, i) => (
+                <div
+                    key={i}
+                    className={`${styles.vtoStep} ${step === i + 1 ? styles.vtoStepActive : ''}`}
+                >
+                    <span className={styles.vtoStepNum}>{s.num}</span>
+                    {s.label}
+                </div>
+            ))}
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
 // TYPING INDICATOR
 // ---------------------------------------------------------------------------
 function TypingDots() {
@@ -183,18 +242,31 @@ export default function Chat() {
             const data = await res.json();
 
             let reply = data.response || data.content || '';
+            let receiptData = null;
 
-            // Handle COD receipt (legacy JSON format)
+            // Parse structured receipt JSON
             try {
                 if (reply.includes('COD_SUCCESS')) {
-                    const parsed = JSON.parse(reply);
-                    if (parsed.payment_url === 'COD_SUCCESS') reply = parsed.message;
+                    // Try to extract JSON from the reply (agent may wrap it in prose)
+                    const jsonMatch = reply.match(/\{[\s\S]*"status"\s*:\s*"COD_SUCCESS"[\s\S]*\}/);
+                    if (jsonMatch) {
+                        const parsed = JSON.parse(jsonMatch[0]);
+                        if (parsed.status === 'COD_SUCCESS') {
+                            receiptData = parsed;
+                            reply = parsed.message || 'Order confirmed!';
+                        }
+                    }
                 }
             } catch (_) {}
 
             reply = reply || "I apologise — I couldn't connect. Please try again.";
 
-            setChatHistory(prev => [...prev, { role: 'ai', content: reply }]);
+            setChatHistory(prev => [
+                ...prev,
+                receiptData
+                    ? { role: 'ai', content: reply, isReceipt: true, receiptData }
+                    : { role: 'ai', content: reply },
+            ]);
             if (data.thread_id) setThreadId(data.thread_id);
 
         } catch (err) {
@@ -239,6 +311,18 @@ export default function Chat() {
         return parts.length > 0 ? parts : <RichText text={content} />;
     };
 
+    // Derive VTO step from chat history
+    const vtoStep = (() => {
+        if (mode !== 'vto') return 1;
+        const hasPhoto = chatHistory.some(m => m.role === 'human' && m.content.includes('[Photo:'));
+        const hasProduct = chatHistory.some(
+            m => m.role === 'ai' && (m.content.includes('try on') || m.content.includes('Step 3') || m.content.includes('Generating'))
+        );
+        if (hasProduct) return 3;
+        if (hasPhoto) return 2;
+        return 1;
+    })();
+
     return (
         <div className={styles.container}>
             {/* ── HEADER ─────────────────────────────────────────────── */}
@@ -267,6 +351,28 @@ export default function Chat() {
 
             {/* ── CHAT AREA ───────────────────────────────────────────── */}
             <section className={styles.chatArea}>
+                {/* VTO step indicator */}
+                {mode === 'vto' && <VtoSteps step={vtoStep} />}
+
+                {/* VTO photo tips (shown before first upload) */}
+                {mode === 'vto' && vtoStep === 1 && chatHistory.length === 0 && (
+                    <div className={styles.vtoTips}>
+                        <strong>📸 Photo Tips for Best Results</strong>
+                        • Full-body shot (head to toe)<br />
+                        • Stand against a plain wall<br />
+                        • Good natural lighting<br />
+                        • Wear fitted clothes so the AI can see your shape
+                    </div>
+                )}
+
+                {/* VTO generating overlay */}
+                {mode === 'vto' && isLoading && vtoStep >= 2 && (
+                    <div className={styles.vtoGenerating}>
+                        <div className={styles.vtoSpinner} />
+                        <span className={styles.vtoGeneratingText}>Generating your look…</span>
+                    </div>
+                )}
+
                 <div className={styles.messageList}>
 
                     {/* Empty state with suggestion chips */}
@@ -296,7 +402,11 @@ export default function Chat() {
                         >
                             <div className={`${styles.bubble} ${msg.role === 'human' ? styles.userBubble : styles.aiBubble}`}>
                                 {msg.role === 'ai' && <span className={styles.aiName}>Pamorya Stylist</span>}
-                                {msg.role === 'ai' ? renderContent(msg.content) : msg.content}
+                                {msg.role === 'ai'
+                                    ? (msg.isReceipt
+                                        ? <><RichText text={msg.content} /><OrderReceipt data={msg.receiptData} /></>
+                                        : renderContent(msg.content))
+                                    : msg.content}
                             </div>
                         </div>
                     ))}

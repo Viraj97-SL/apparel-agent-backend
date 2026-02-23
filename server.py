@@ -24,6 +24,12 @@ from slowapi.util import get_remote_address
 # --- AGENT IMPORTS ---
 from app.agent import app as rag_agent_app
 from app.vto_agent import handle_vto_message
+from app.whatsapp_adapter import (
+    parse_twilio_payload,
+    download_whatsapp_image,
+    format_for_whatsapp,
+    send_whatsapp_reply,
+)
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION
@@ -320,6 +326,91 @@ async def chat(
         )
 
     return OutputChat(response=final_response, thread_id=thread_id)
+
+
+# ---------------------------------------------------------------------------
+# WHATSAPP WEBHOOK (Twilio)
+# ---------------------------------------------------------------------------
+@app.post("/whatsapp")
+async def whatsapp_webhook(request: Request):
+    """
+    Receives incoming WhatsApp messages from Twilio, runs the agent,
+    and sends a reply back via the Twilio Messages API.
+
+    Required env vars: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER
+    Set the Twilio sandbox/webhook URL to: https://<your-domain>/whatsapp
+    """
+    form = await request.form()
+    payload = parse_twilio_payload(dict(form))
+
+    thread_id  = payload["thread_id"]
+    user_text  = payload["text"]
+    media_url  = payload["media_url"]
+    sender     = payload["from"]
+
+    print(f"--- WhatsApp [{thread_id}]: '{user_text}' | media={bool(media_url)} ---")
+
+    # Download any attached image
+    image_path: str | None = None
+    if media_url:
+        image_path = await download_whatsapp_image(media_url)
+
+    final_response = ""
+
+    try:
+        # Determine mode: VTO if an image is present OR if recent history suggests VTO
+        # For simplicity, treat image uploads as VTO mode; text-only as standard
+        if image_path and not user_text:
+            # Photo with no text → VTO photo step
+            final_response = handle_vto_message(thread_id, "", image_path)
+        elif image_path:
+            # Photo + text → could be VTO product selection or general
+            final_response = handle_vto_message(thread_id, user_text, image_path)
+        else:
+            # Standard text → LangGraph agent
+            config = {"configurable": {"thread_id": thread_id}}
+            await resolve_stale_state(config)
+
+            input_message = [HumanMessage(content=user_text or "Hello")]
+
+            async with asyncio.timeout(AGENT_TIMEOUT_SECONDS):
+                async for event in rag_agent_app.astream(
+                    {"messages": input_message},
+                    config=config,
+                    stream_mode="values",
+                ):
+                    new_messages = event.get("messages", [])
+                    if not new_messages:
+                        continue
+                    last_message = new_messages[-1]
+                    if isinstance(last_message, AIMessage) and last_message.content:
+                        raw_content = last_message.content
+                        text_content = ""
+                        if isinstance(raw_content, str):
+                            text_content = raw_content
+                        elif isinstance(raw_content, list):
+                            for part in raw_content:
+                                if isinstance(part, dict) and "text" in part:
+                                    text_content += part["text"]
+                        if text_content.strip():
+                            final_response = text_content
+
+    except asyncio.TimeoutError:
+        final_response = "I'm taking a bit longer than usual — please try again in a moment."
+    except Exception as exc:
+        print(f"❌ WhatsApp agent error: {exc}")
+        traceback.print_exc()
+        final_response = "I encountered a temporary error. Please try again."
+
+    if not final_response:
+        final_response = "I processed your request but couldn't generate a response."
+
+    # Format and send reply
+    text_body, image_urls = format_for_whatsapp(final_response)
+    await send_whatsapp_reply(to=sender, text=text_body, media_urls=image_urls)
+
+    # Twilio expects a 200 OK (empty TwiML or plain 200 is fine for async replies)
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":

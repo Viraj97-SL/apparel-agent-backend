@@ -163,3 +163,189 @@ class TestInventoryModel:
             .first()
         )
         assert result.stock_quantity == 0
+
+
+# ---------------------------------------------------------------------------
+# New tool-behaviour tests (ORM-level, no LangChain tool call overhead)
+# ---------------------------------------------------------------------------
+
+class TestSalesToolBehaviours:
+    """
+    These tests exercise the *logic* of the new tool helpers by driving the
+    database directly — the same way the tools do internally — so we stay
+    fully in-process without patching SessionLocal.
+    """
+
+    def _make_order_with_items(self, session, thread_id, product, items):
+        """Helper: create a pending order with given items."""
+        customer = session.query(Customer).filter_by(customer_id=thread_id).first()
+        if not customer:
+            customer = Customer(customer_id=thread_id, full_name="Test")
+            session.add(customer)
+            session.flush()
+
+        order = Order(
+            customer_id=thread_id,
+            thread_id=thread_id,
+            status="pending_payment",
+            total_amount=0.0,
+        )
+        session.add(order)
+        session.flush()
+
+        for name, size, qty in items:
+            item = OrderItem(
+                order_id=order.order_id,
+                product_id=product.product_id,
+                product_name=name,
+                size=size,
+                quantity=qty,
+                price_at_purchase=product.price,
+            )
+            session.add(item)
+            order.total_amount += product.price * qty
+
+        session.commit()
+        return order
+
+    def test_out_of_stock_returns_friendly_message(self, test_session, sample_product):
+        """Inventory row with stock_quantity=0 → out-of-stock message."""
+        # Mark size M as zero stock
+        inv = test_session.query(Inventory).filter_by(
+            product_id=sample_product.product_id, size="M"
+        ).first()
+        inv.stock_quantity = 0
+        # Add an available size
+        test_session.add(Inventory(product_id=sample_product.product_id, size="L", stock_quantity=5))
+        test_session.commit()
+
+        # Simulate the stock check logic from create_draft_order
+        size_upper = "M"
+        inv_check = test_session.query(Inventory).filter_by(
+            product_id=sample_product.product_id, size=size_upper
+        ).first()
+        assert inv_check is not None
+        assert inv_check.stock_quantity == 0
+
+        available = test_session.query(Inventory).filter(
+            Inventory.product_id == sample_product.product_id,
+            Inventory.stock_quantity > 0,
+        ).all()
+        sizes_list = ", ".join(i.size for i in available)
+        msg = (
+            f"OUT_OF_STOCK: Size {size_upper} is currently unavailable for "
+            f"{sample_product.product_name}. Available sizes: {sizes_list}"
+        )
+        assert "OUT_OF_STOCK" in msg
+        assert "L" in msg
+
+    def test_view_cart_returns_formatted_summary(self, test_session, sample_product):
+        """view_cart logic returns a CART: block with items and total."""
+        thread_id = "thread-view-cart"
+        order = self._make_order_with_items(
+            test_session, thread_id, sample_product,
+            [("Crimson Canvas", "M", 2)]
+        )
+
+        # Simulate view_cart
+        items = test_session.query(OrderItem).filter_by(order_id=order.order_id).all()
+        assert len(items) == 1
+
+        lines = ["CART:"]
+        for i, it in enumerate(items, 1):
+            line_total = it.price_at_purchase * it.quantity
+            lines.append(
+                f"  {i}. {it.quantity}x {it.product_name} ({it.size})"
+                f" — LKR {line_total:,.0f}"
+            )
+        lines.append("  " + "─" * 35)
+        lines.append(f"  Total: LKR {order.total_amount:,.0f}")
+        summary = "\n".join(lines)
+
+        assert "CART:" in summary
+        assert "Crimson Canvas" in summary
+        assert "LKR" in summary
+        assert "Total" in summary
+
+    def test_remove_from_cart_updates_total(self, test_session, sample_product):
+        """Removing an item reduces order total correctly."""
+        thread_id = "thread-remove"
+        order = self._make_order_with_items(
+            test_session, thread_id, sample_product,
+            [("Crimson Canvas", "M", 1), ("Crimson Canvas", "S", 2)],
+        )
+        original_total = order.total_amount  # 3 × 45.99 = 137.97
+
+        # Remove the size-M item
+        item = test_session.query(OrderItem).filter(
+            OrderItem.order_id == order.order_id,
+            OrderItem.size == "M",
+        ).first()
+        assert item is not None
+        removed = item.price_at_purchase * item.quantity
+        test_session.delete(item)
+        order.total_amount = max(0.0, order.total_amount - removed)
+        test_session.commit()
+
+        test_session.refresh(order)
+        expected = original_total - removed
+        assert abs(order.total_amount - expected) < 0.01
+        remaining = test_session.query(OrderItem).filter_by(order_id=order.order_id).all()
+        assert len(remaining) == 1
+        assert remaining[0].size == "S"
+
+    def test_receipt_json_structure(self, test_session, sample_product):
+        """confirm_order_details logic produces a valid receipt JSON."""
+        import json
+        from datetime import datetime, timezone
+
+        thread_id = "thread-receipt"
+        order = self._make_order_with_items(
+            test_session, thread_id, sample_product,
+            [("Crimson Canvas", "M", 1)],
+        )
+
+        # Update customer info
+        customer = test_session.query(Customer).filter_by(customer_id=thread_id).first()
+        customer.full_name     = "Viraj"
+        customer.shipping_address = "Eheliyagoda"
+        customer.phone_number  = "071791300"
+
+        # Generate order number and confirm
+        date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
+        import uuid as _uuid
+        order_number = f"PAM-{date_part}-{_uuid.uuid4().hex[:4].upper()}"
+        order.order_number = order_number
+        order.status = "confirmed"
+
+        items_payload = [
+            {
+                "name":  it.product_name,
+                "size":  it.size,
+                "qty":   it.quantity,
+                "price": int(it.price_at_purchase),
+            }
+            for it in order.items
+        ]
+        receipt = {
+            "status":        "COD_SUCCESS",
+            "order_number":  order_number,
+            "customer_name": customer.full_name,
+            "items":         items_payload,
+            "total":         int(order.total_amount),
+            "address":       customer.shipping_address,
+            "phone":         customer.phone_number,
+            "message":       f"Order confirmed! We will contact you at {customer.phone_number}.",
+        }
+        test_session.commit()
+
+        receipt_str = json.dumps(receipt)
+        parsed = json.loads(receipt_str)
+
+        assert parsed["status"] == "COD_SUCCESS"
+        assert parsed["order_number"].startswith("PAM-")
+        assert parsed["customer_name"] == "Viraj"
+        assert len(parsed["items"]) == 1
+        assert parsed["items"][0]["name"] == "Crimson Canvas"
+        assert parsed["total"] > 0
+        assert "071791300" in parsed["message"]

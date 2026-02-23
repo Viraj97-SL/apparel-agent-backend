@@ -56,6 +56,8 @@ class Order(Base):
     customer_id = Column(String, ForeignKey("customers.customer_id"), nullable=True)
     # Added thread_id to track which chat session this belongs to
     thread_id = Column(String, index=True, nullable=True)
+    # Human-readable order number: PAM-YYYYMMDD-XXXX
+    order_number = Column(String, unique=True, nullable=True, index=True)
 
     status = Column(String, default="Draft")  # Draft, Pending, Paid, Shipped
     total_amount = Column(Float, default=0.0)
@@ -99,3 +101,16 @@ class RestockNotification(Base):
     product_id = Column(Integer)
     size = Column(String)
     status = Column(String, default="Pending")
+
+
+# --- VIRTUAL TRY-ON SESSIONS (DB-backed, survives restarts) ---
+class VtoSession(Base):
+    __tablename__ = "vto_sessions"
+
+    thread_id     = Column(String, primary_key=True)
+    user_image    = Column(String, nullable=True)   # path on disk
+    product_image = Column(Text, nullable=True)     # Cloudinary URL
+    product_name  = Column(String, nullable=True)
+    usage_count   = Column(Integer, default=0)
+    usage_date    = Column(String, nullable=True)   # ISO date YYYY-MM-DD
+    updated_at    = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())

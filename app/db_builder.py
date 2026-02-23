@@ -2,19 +2,14 @@ import pandas as pd
 import os
 import re
 import traceback
-from sqlalchemy import inspect
 from app.database import engine, SessionLocal
-from app.models import Base, Product, Inventory
+from app.models import Base, Product, Inventory, VtoSession
 
 
 def init_db():
-    """Creates tables ONLY if they don't exist."""
-    inspector = inspect(engine)
-    if not inspector.has_table("products"):
-        print("--- 🆕 New Database Detected. Creating Tables... ---")
-        Base.metadata.create_all(bind=engine)
-        return True
-    return False
+    """Idempotent table creation — creates any missing tables without touching existing ones."""
+    print("--- 🔄 Ensuring all tables exist (create_all idempotent)... ---")
+    Base.metadata.create_all(bind=engine)
 
 
 def clean_column_name(col_name):
