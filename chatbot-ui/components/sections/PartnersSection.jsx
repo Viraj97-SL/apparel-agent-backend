@@ -1,3 +1,5 @@
+'use client';
+
 const PRESS = [
   { name: 'Daily Mirror LK', tag: 'Press' },
   { name: 'Colombo Telegraph', tag: 'Press' },
