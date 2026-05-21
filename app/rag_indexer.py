@@ -1,66 +1,67 @@
 import os
+import logging
 from dotenv import load_dotenv
 
-# --- UPDATED IMPORTS ---
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 
-# Load environment variables
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# --- Setup Project Paths ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 
 DATA_PATH = os.path.join(project_root, "data")
 INDEX_PATH = os.path.join(project_root, "faiss_index")
 
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
 
 def create_vector_store():
     """
-    Reads all .txt files from the /data directory,
-    splits them, creates embeddings, and saves to FAISS.
+    Reads all .txt files from /data, embeds with Google text-embedding-004,
+    and saves the FAISS index.
+    Upgraded from HuggingFace MiniLM to Google text-embedding-004 for better
+    semantic understanding of fashion/apparel terminology.
     """
-    print(f"Loading documents from: {DATA_PATH}")
+    if not GOOGLE_API_KEY:
+        raise ValueError("GOOGLE_API_KEY required to build the index.")
 
-    # --- UPDATED LOADER ---
+    logger.info("Loading documents from: %s", DATA_PATH)
     loader = DirectoryLoader(
         DATA_PATH,
-        glob="**/*.txt",  # Look for all .txt files
-        loader_cls=TextLoader,  # Use TextLoader for each file
-
-        # VVVV --- THIS IS THE FIX --- VVVV
-        loader_kwargs={"encoding": "utf-8"}  # Explicitly use UTF-8
-        # ^^^^ --- END OF FIX --- ^^^^
+        glob="**/*.txt",
+        loader_cls=TextLoader,
+        loader_kwargs={"encoding": "utf-8"},
     )
     documents = loader.load()
 
     if not documents:
-        print("No .txt files found in the /data directory. Please add some.")
+        logger.error("No .txt files found in %s", DATA_PATH)
         return
 
-    print(f"Loaded {len(documents)} document(s).")
+    logger.info("Loaded %d document(s)", len(documents))
 
-    # Split the documents into chunks
-    text_splitter = RecursiveCharacterTextSplitter(
+    splitter = RecursiveCharacterTextSplitter(
         separators=["---", "\n\n", "\n"],
         chunk_size=1000,
-        chunk_overlap=200
+        chunk_overlap=200,
     )
-    docs = text_splitter.split_documents(documents)
-    print(f"Split into {len(docs)} chunks.")
+    docs = splitter.split_documents(documents)
+    logger.info("Split into %d chunks", len(docs))
 
-    print("Initializing embedding model (HuggingFace)...")
-    model_name = "sentence-transformers/all-MiniLM-L6-v2"
-    embeddings = HuggingFaceEmbeddings(model_name=model_name)
+    logger.info("Embedding with Google text-embedding-004...")
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004",
+        google_api_key=GOOGLE_API_KEY,
+    )
 
-    print("Creating and saving FAISS index...")
     db = FAISS.from_documents(docs, embeddings)
     db.save_local(INDEX_PATH)
-
-    print(f"Successfully created and saved FAISS index to '{INDEX_PATH}'")
+    logger.info("FAISS index saved to %s", INDEX_PATH)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 import asyncio
+import logging
 import os
 import re
 import shutil
+import time
 import traceback
 import uuid
 from contextlib import asynccontextmanager
@@ -13,8 +15,16 @@ from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
+from app.observability import configure_langsmith
+
 # --- DB IMPORTS ---
 from app.db_builder import init_db, populate_initial_data
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configure LangSmith before the agent module loads
+configure_langsmith()
 
 # --- SECURITY: Rate Limiting ---
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -411,6 +421,169 @@ async def whatsapp_webhook(request: Request):
 
     # Twilio expects a 200 OK (empty TwiML or plain 200 is fine for async replies)
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# VTO ASYNC ENDPOINTS
+# ---------------------------------------------------------------------------
+class VtoStartResponse(BaseModel):
+    job_id: str
+    status: str
+    estimated_seconds: int
+
+
+class VtoStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    result_url: str
+    error: str
+
+
+@app.post("/vto/start", response_model=VtoStartResponse)
+@limiter.limit("10/minute")
+async def vto_start(
+    request: Request,
+    thread_id: str = Form(...),
+    product_name: str = Form(...),
+    file: UploadFile = File(None),
+):
+    """
+    Enqueue a VTO job and return immediately.
+    Frontend polls /vto/status/{job_id} for the result.
+    """
+    from app.vto_agent import (
+        get_product_from_db, get_or_create_session, check_and_increment_limit,
+        process_vto_job, set_job_status, _get_cached_result
+    )
+
+    if not thread_id:
+        thread_id = str(uuid.uuid4())
+
+    # Handle file upload
+    image_path = None
+    if file:
+        file.file.seek(0, 2)
+        size = file.file.tell()
+        file.file.seek(0)
+        if size > MAX_FILE_SIZE:
+            return VtoStartResponse(job_id="", status="error", estimated_seconds=0)
+        ext = (file.filename.lower().split(".")[-1] if "." in file.filename else "")
+        if ext not in ALLOWED_EXTENSIONS:
+            return VtoStartResponse(job_id="", status="error", estimated_seconds=0)
+        safe_filename = f"{uuid.uuid4()}.{ext}"
+        file_location = os.path.join(UPLOAD_DIR, safe_filename)
+        with open(file_location, "wb+") as f:
+            shutil.copyfileobj(file.file, f)
+        image_path = file_location
+
+    # Look up product
+    from app.database import SessionLocal
+    from app.models import VtoSession
+
+    product_data = get_product_from_db(product_name)
+    if not product_data:
+        return VtoStartResponse(job_id="", status="product_not_found", estimated_seconds=0)
+
+    # Cache check
+    cached = _get_cached_result(thread_id, product_data["name"])
+    if cached:
+        job_id = str(uuid.uuid4())
+        set_job_status(job_id, "completed", result_url=cached)
+        return VtoStartResponse(job_id=job_id, status="cached", estimated_seconds=0)
+
+    # Resolve user image from session if not uploaded now
+    db = SessionLocal()
+    try:
+        vto = get_or_create_session(db, thread_id)
+        if image_path:
+            vto.user_image = image_path
+        if not vto.user_image:
+            db.close()
+            return VtoStartResponse(job_id="", status="no_user_photo", estimated_seconds=0)
+        user_image = vto.user_image
+        if not check_and_increment_limit(db, thread_id):
+            db.close()
+            return VtoStartResponse(job_id="", status="daily_limit_reached", estimated_seconds=0)
+        db.commit()
+    finally:
+        db.close()
+
+    job_id = str(uuid.uuid4())
+    set_job_status(job_id, "queued")
+
+    asyncio.create_task(
+        process_vto_job(
+            job_id=job_id,
+            thread_id=thread_id,
+            user_image_path=user_image,
+            product_image_url=product_data["url"],
+            product_name=product_data["name"],
+            product_category=product_data["category"],
+        )
+    )
+
+    return VtoStartResponse(job_id=job_id, status="queued", estimated_seconds=25)
+
+
+@app.get("/vto/status/{job_id}", response_model=VtoStatusResponse)
+async def vto_status(job_id: str):
+    """Poll for VTO job result. Frontend calls this every 3s until status=completed."""
+    from app.vto_agent import get_job_status
+    data = get_job_status(job_id)
+    return VtoStatusResponse(
+        job_id=job_id,
+        status=data.get("status", "not_found"),
+        result_url=data.get("result_url", ""),
+        error=data.get("error", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# HEALTH + METRICS ENDPOINTS
+# ---------------------------------------------------------------------------
+@app.get("/health")
+async def health():
+    """Liveness probe — returns DB reachability and uptime."""
+    from app.database import SessionLocal
+    db_ok = False
+    try:
+        with SessionLocal() as session:
+            session.execute(__import__("sqlalchemy").text("SELECT 1"))
+            db_ok = True
+    except Exception:
+        pass
+
+    return {
+        "status": "healthy" if db_ok else "degraded",
+        "db": "ok" if db_ok else "unreachable",
+        "version": "2.0.0",
+    }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Basic operational metrics for the dashboard and LangSmith."""
+    from app.models import Order, VtoSession
+    from app.database import SessionLocal
+    from sqlalchemy import func
+
+    try:
+        with SessionLocal() as session:
+            order_count = session.query(func.count(Order.id)).scalar() or 0
+            vto_count = session.query(func.count(VtoSession.thread_id)).scalar() or 0
+    except Exception:
+        order_count = 0
+        vto_count = 0
+
+    return {
+        "orders_total": order_count,
+        "vto_sessions_total": vto_count,
+        "agent_version": "langgraph_v3",
+        "models": {
+            "supervisor": __import__("os").getenv("GEMINI_SUPERVISOR_MODEL", "gemini-2.5-pro"),
+            "worker": __import__("os").getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
+        },
+    }
 
 
 if __name__ == "__main__":

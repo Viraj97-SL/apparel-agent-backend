@@ -1,284 +1,207 @@
 import os
 import sys
 import asyncio
-from dotenv import load_dotenv
+import logging
+from contextlib import asynccontextmanager
 from typing import TypedDict, Annotated, Sequence
 import operator
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
+
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+
+from langchain_core.messages import (
+    BaseMessage,
+    HumanMessage,
+    AIMessage,
+    ToolMessage,
+    trim_messages,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.tools.tavily_search import TavilySearchResults
-# MCP Adapter Imports
-from langchain_mcp_adapters.client import MultiServerMCPClient
-# --- Our Custom Imports ---
-from app.chat_with_rag import create_rag_chain
-# --- NEW IMPORT: Sales Tools ---
-from app.sales_tools import create_draft_order, confirm_order_details, view_cart, remove_from_cart
 
-# --- LangGraph Imports ---
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
 from langgraph.graph import StateGraph, END
-# Use AsyncSqliteSaver for async support (fallback)
+from langgraph.graph.state import CompiledStateGraph
+
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-# For supervisor tool-calling
-from langchain_core.tools import tool
-# 🟢 NEW IMPORT: Required for threading
-from langchain_core.runnables import RunnableConfig
-from pydantic import BaseModel, Field
-import nest_asyncio
 
-# Apply the patch for nested event loops
-nest_asyncio.apply()
+from app.chat_with_rag import create_rag_chain
+from app.sales_tools import create_draft_order, confirm_order_details, view_cart, remove_from_cart
+from app.observability import configure_langsmith, run_metadata
+from app.memory.episodic import episodic_memory
+from app.memory.semantic import semantic_memory
 
-# Load environment variables
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# --- 1. CRITICAL: Capture and Validate API Keys ---
+# ---------------------------------------------------------------------------
+# LangSmith — configure before anything else so all traces are captured
+# ---------------------------------------------------------------------------
+configure_langsmith()
+
+# ---------------------------------------------------------------------------
+# API Keys
+# ---------------------------------------------------------------------------
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 if not GOOGLE_API_KEY:
-    print("❌ CRITICAL ERROR: GOOGLE_API_KEY is missing!")
     raise ValueError("GOOGLE_API_KEY not found.")
 
+# Model IDs — make configurable so upgrading to next Gemini release is a one-line env change
+GEMINI_SUPERVISOR_MODEL = os.getenv("GEMINI_SUPERVISOR_MODEL", "gemini-2.5-pro")
+GEMINI_WORKER_MODEL = os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash")
 
-# --- 2. Define Agent State ---
+# ---------------------------------------------------------------------------
+# 1. Enhanced Agent State (LangGraph v0.3)
+# ---------------------------------------------------------------------------
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
+    # Plan-and-Execute: list of steps the planner generated
+    plan: list[str]
+    current_step: int
+    # Reflexion: self-critique history; used to decide retry
+    reflections: list[str]
+    # Memory layer: injected context from long-term MongoDB store
+    memory_context: str
+    # Extracted user profile (size prefs, style, budget)
+    user_profile: dict
+    # Propagated through every node for tool injection + tracing
+    thread_id: str
     next: str
 
 
-# --- 3. Define Agents and Tools ---
-
-# --- HYBRID BRAIN SETUP ---
-# 1. The "Big Brain" (Supervisor)
+# ---------------------------------------------------------------------------
+# 2. LLM Setup
+# ---------------------------------------------------------------------------
 llm_supervisor = ChatGoogleGenerativeAI(
-    model="gemini-2.5-pro",
-    temperature=0.2,
-    google_api_key=GOOGLE_API_KEY
+    model=GEMINI_SUPERVISOR_MODEL,
+    temperature=0.1,
+    google_api_key=GOOGLE_API_KEY,
+    thinking_budget=8000,
 )
 
-# 2. The "Fast Worker" (Data / Web / Tool Agents)
 llm_worker = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model=GEMINI_WORKER_MODEL,
     temperature=0.0,
-    google_api_key=GOOGLE_API_KEY
+    google_api_key=GOOGLE_API_KEY,
+    thinking_budget=2000,
 )
 
-# --- Agent 1: The Policy Agent (RAG) ---
-print("Initializing Policy Agent (RAG)...")
+# Multimodal model for style advice (same Flash, different temp)
+llm_vision = ChatGoogleGenerativeAI(
+    model=GEMINI_WORKER_MODEL,
+    temperature=0.3,
+    google_api_key=GOOGLE_API_KEY,
+)
+
+# ---------------------------------------------------------------------------
+# 3. RAG Agent
+# ---------------------------------------------------------------------------
+logger.info("Initializing Policy Agent (RAG)...")
 rag_agent_chain = create_rag_chain()
-print("Policy Agent initialized.")
+logger.info("Policy Agent initialized.")
 
-# --- Agent 2: The Data Query & Sales Agents ---
-print("Initializing Data & Sales Tools...")
-python_path = sys.executable
+# ---------------------------------------------------------------------------
+# 4. Tool initialisation — wrapped in an async factory to avoid module-level
+#    asyncio.run() which makes the module un-importable in tests.
+# ---------------------------------------------------------------------------
+_tools_initialized = False
+mcp_tools_list: list = []
+sales_tools_list: list = []
+mcp_client = None
+data_tool_lookup: dict = {}
+llm_query = None
+llm_sales = None
 
 
-async def initialize_tools():
-    # 1. Setup MCP (Data Query Tools)
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(current_dir)
-    env_vars = dict(os.environ)
-    env_vars["PYTHONPATH"] = project_root
+@asynccontextmanager
+async def tool_lifespan():
+    """Initialise MCP + sales tools once; tear down MCP client on exit."""
+    global _tools_initialized, mcp_tools_list, sales_tools_list, mcp_client
+    global data_tool_lookup, llm_query, llm_sales
 
-    client = MultiServerMCPClient(
-        {
-            "data_query": {
-                "transport": "stdio",
-                "command": python_path,
-                "args": [os.path.join(current_dir, "data_query_server.py")],
-                "env": env_vars
+    if not _tools_initialized:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(current_dir)
+        env_vars = {**os.environ, "PYTHONPATH": project_root}
+
+        mcp_client = MultiServerMCPClient(
+            {
+                "data_query": {
+                    "transport": "stdio",
+                    "command": sys.executable,
+                    "args": [os.path.join(current_dir, "data_query_server.py")],
+                    "env": env_vars,
+                }
             }
-        }
-    )
-    mcp_tools = await client.get_tools()
+        )
+        mcp_tools_list = await mcp_client.get_tools()
+        sales_tools_list = [create_draft_order, confirm_order_details, view_cart, remove_from_cart]
 
-    # 2. Setup Local Sales Tools (Imported manually)
-    local_sales_tools = [create_draft_order, confirm_order_details, view_cart, remove_from_cart]
+        all_tools = mcp_tools_list + sales_tools_list
+        data_tool_lookup = {t.name: t for t in all_tools}
 
-    return mcp_tools, local_sales_tools, client
+        llm_query = llm_worker.bind_tools(mcp_tools_list)
+        llm_sales = llm_worker.bind_tools(sales_tools_list)
+
+        _tools_initialized = True
+        logger.info("Data Query tools: %s", [t.name for t in mcp_tools_list])
+        logger.info("Sales tools: %s", [t.name for t in sales_tools_list])
+
+    yield
+
+    if mcp_client:
+        try:
+            await mcp_client.__aexit__(None, None, None)
+        except Exception:
+            pass
 
 
-# Initialize tools
-mcp_tools_list, sales_tools_list, mcp_client = asyncio.run(initialize_tools())
+async def ensure_tools():
+    """Initialise tools if not already done (called at app startup)."""
+    async with tool_lifespan():
+        pass
 
-# Create a Master Lookup for the Executor Node
-# We merge both lists so the executor can find tools by name
-all_tools = mcp_tools_list + sales_tools_list
-data_tool_lookup = {t.name: t for t in all_tools}
 
-# Bind specific tools to specific LLM instances
-llm_query = llm_worker.bind_tools(mcp_tools_list)
-llm_sales = llm_worker.bind_tools(sales_tools_list)
+# Bootstrap tools synchronously for the module-level graph compile below.
+# nest_asyncio lets this work even if an event loop is already running (Railway).
+import nest_asyncio
+nest_asyncio.apply()
+asyncio.run(ensure_tools())
 
-print(f"Data Query tools initialized: {[t.name for t in mcp_tools_list]}")
-print(f"Sales Agent tools initialized: {[t.name for t in sales_tools_list]}")
-
-# --- Agent 3: The Web Search Agent ---
-print("Initializing Web Search Tool...")
-web_search_tool = TavilySearchResults(max_results=3, name="tavily_general_search")
+# ---------------------------------------------------------------------------
+# 5. Web Search Tool
+# ---------------------------------------------------------------------------
+web_search_tool = TavilySearchResults(max_results=4, name="tavily_general_search")
 web_search_tools_list = [web_search_tool]
 llm_with_web_search_tools = llm_worker.bind_tools(web_search_tools_list)
 web_search_tool_lookup = {t.name: t for t in web_search_tools_list}
 
-
-# --- 4. Define Graph Nodes (all async) ---
-
-async def rag_agent_node(state: AgentState):
-    """Calls the RAG chain for policy questions."""
-    print("\n--- Calling Policy Agent ---")
-    messages = state["messages"]
-    last_human_message = messages[-1].content
-    response_str = await rag_agent_chain.ainvoke(last_human_message)
-    return {"messages": [AIMessage(content=response_str)]}
-
-
-# --- 1. UPDATE: Data Query Agent Node (The Inventory Specialist) ---
-async def data_query_agent_node(state: AgentState):
-    """Calls the WORKER LLM bound to the Query tools."""
-    print("\n--- Calling Data Query Agent ---")
-
-    system_prompt = """You are an Inventory Assistant for 'Pamorya'.
-
-    **YOUR TOOLBOX:**
-    1. `get_available_categories()`: Use this FIRST if the user asks "What do you have?" or "What kind of clothes do you sell?".
-    2. `list_products(category_filter="...")`: Use this for BROWSING.
-       - Map user words to these valid categories: 'Dresses', 'Skirts', 'Pants & Trousers', 'Tops & Blouses', 'Sets & Co-ords', 'Jumpers & Knits'.
-       - Example: User says "Show me skirts" -> call `list_products(category_filter="Skirts")`.
-       - Example: User says "Do you have tops?" -> call `list_products(category_filter="Tops & Blouses")`.
-    3. `query_product_database(search_query="...")`: Use this for SPECIFIC items.
-       - Example: "Blue floral dress" or "Midnight Petal".
-
-    **GUIDELINES:**
-    - If the tool says "No products found", apologize and suggest checking `get_available_categories`.
-    - **Images:** Always append the exact image tags (e.g. <img src...>) from the tool output to your message.
-    - Do NOT make up products. Only use what the tools return.
-    """
-
-    messages = [HumanMessage(content=system_prompt)] + state["messages"]
-    ai_response = await llm_query.ainvoke(messages)
-    return {"messages": [ai_response]}
-
-
-async def sales_agent_node(state: AgentState):
-    """Calls the WORKER LLM bound to the Sales tools."""
-    print("\n--- Calling Sales Agent ---")
-
-    system_prompt = """You are the Sales Agent for Pamorya. Your goal is to secure the order. **PROCESS:**
-    1. **Clarify the Order:** Ensure you know the Product Name, Size, and Quantity.
-       - Check the immediate conversation history for the product (e.g., if previous messages mention 'Crimson Canvas', use that).
-       - If the user responds with just size/quantity (e.g., "Size M, one" or "size: M, Quantity:1"), infer the product from the last discussed item in a buying context.
-       - If unclear or multiple items, ask for clarification.
-       - If they want multiple items, add them one by one.
-    1.5. **View Cart:** If the user says 'show my cart', 'view cart', or 'what's in my cart' → call `view_cart`.
-    1.6. **Remove from Cart:** If the user says 'remove [item]' or 'delete [item] from cart' → call `remove_from_cart` with the product name.
-    2. **Create Draft:** Once you have product, size, and quantity, call 'create_draft_order' with the details.
-       - This tool returns the Total Price. Show this to the user.
-    2.5. **Out of Stock:** If the tool returns a message starting with 'OUT_OF_STOCK' → apologise warmly and list the available sizes from the message.
-    3. **Get Customer Info:** After the draft is created, ask for: Full Name, Shipping Address, Phone Number.
-    4. **Confirm:** If the user provides name, address, and phone (even in one message like "Name:Viraj, Address:Eheliyagoda, Number:071791300"), you MUST parse it and call 'confirm_order_details'.
-       - Parse examples:
-         - "Name:Viraj, Address:Eheliyagoda, Number:071791300" -> customer_name='Viraj', address='Eheliyagoda', phone='071791300'
-         - "Viraj from Eheliyagoda, phone 071791300" -> customer_name='Viraj', address='Eheliyagoda', phone='071791300'
-         - If missing or unclear, ask for clarification (e.g., "Could you confirm your full name?").
-       - Always include thread_id from history.
-       - If the tool returns a JSON with status "COD_SUCCESS", relay the order_number and confirmation message to the customer warmly.
-    **CRITICAL:** After asking for customer info, your next response MUST be the tool call if details are provided—do not reply without calling 'confirm_order_details'.
-    **TONE:** Professional, efficient, and warm. If an error occurs, apologize and suggest alternatives."""
-
-    messages = [HumanMessage(content=system_prompt)] + state["messages"]
-    return {"messages": [await llm_sales.ainvoke(messages)]}
-
-
-# 🟢 CRITICAL FIX: Added 'config' parameter to capture Thread ID
-async def data_query_tool_executor_node(state: AgentState, config: RunnableConfig):
-    """Executes BOTH Data Query and Sales tools with Thread ID injection."""
-    print("\n--- Calling Data/Sales Tool Executor ---")
-    messages = state["messages"]
-    last_message = messages[-1]
-    tool_messages = []
-
-    # Extract the thread_id from the LangGraph config
-    # This ID is unique to the user's browser session
-    thread_id = config.get("configurable", {}).get("thread_id", "guest_user")
-    print(f"DEBUG: Using Thread ID for Database: {thread_id}")
-
-    if not last_message.tool_calls:
-        return {"messages": []}
-
-    tasks = []
-    for tool_call in last_message.tool_calls:
-        tool_name = tool_call["name"]
-        tool_args = tool_call["args"]
-
-        # 🟢 INJECT THREAD ID:
-        # If the tool is a sales tool, pass the thread_id so the DB knows who this is
-        if tool_name in ["create_draft_order", "confirm_order_details", "view_cart", "remove_from_cart"]:
-            tool_args["thread_id"] = thread_id
-
-        print(f" -> Preparing tool: {tool_name} with args {tool_args}")
-
-        # Look up tool in the master dictionary
-        tool_to_call = data_tool_lookup.get(tool_name)
-
-        if not tool_to_call:
-            tasks.append((tool_call["id"], f"Error: Tool '{tool_name}' not found."))
-        else:
-            # Handle both async and sync tools
-            if asyncio.iscoroutinefunction(tool_to_call.invoke) or hasattr(tool_to_call, 'ainvoke'):
-                tasks.append((tool_call["id"], tool_to_call.ainvoke(tool_args)))
-            else:
-                tasks.append((tool_call["id"], tool_to_call.invoke(tool_args)))
-
-    # Execute tasks
-    results = []
-    for tool_id, task in tasks:
-        try:
-            if asyncio.iscoroutine(task):
-                res = await task
-            else:
-                res = task
-            results.append((tool_id, res))
-        except Exception as e:
-            results.append((tool_id, f"Error: {e}"))
-
-    for tool_id, result in results:
-        tool_messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
-
-    print("Tool Observations:", [msg.content for msg in tool_messages])
-    return {"messages": tool_messages}
-
-
-async def web_search_agent_node(state: AgentState):
-    print("\n--- Calling Web Search Agent ---")
-    messages = [HumanMessage(content="Use tavily_general_search")] + list(state["messages"])
-    ai_response = await llm_with_web_search_tools.ainvoke(messages)
-    return {"messages": [ai_response]}
-
-
-async def web_search_tool_executor_node(state: AgentState):
-    print("\n--- Calling Web Search Executor ---")
-    messages = state["messages"]
-    last_message = messages[-1]
-    tool_messages = []
-    if not last_message.tool_calls: return {"messages": []}
-
-    for tool_call in last_message.tool_calls:
-        tool_to_call = web_search_tool_lookup.get(tool_call["name"])
-        if tool_to_call:
-            res = tool_to_call.invoke(tool_call["args"])
-            tool_messages.append(ToolMessage(content=str(res), tool_call_id=tool_call["id"]))
-
-    return {"messages": tool_messages}
-
-
-# --- 5. Define the Supervisor (Router) ---
-print("Initializing Supervisor...")
-
-
+# ---------------------------------------------------------------------------
+# 6. Supervisor (Router)
+# ---------------------------------------------------------------------------
 class RouteArgs(BaseModel):
-    next_node: str = Field(..., enum=["rag_agent", "data_query_agent", "sales_agent", "web_search_agent", "__end__"])
+    next_node: str = Field(
+        ...,
+        enum=[
+            "memory_injector",
+            "planner",
+            "rag_agent",
+            "data_query_agent",
+            "sales_agent",
+            "web_search_agent",
+            "style_advisor",
+            "reflection",
+            "__end__",
+        ],
+    )
 
 
 @tool("route", args_schema=RouteArgs)
@@ -289,118 +212,642 @@ def route(next_node: str) -> str:
 
 llm_with_route = llm_supervisor.bind_tools([route])
 
-# --- 2. UPDATE: Supervisor Prompt (The Router) ---
 supervisor_prompt = ChatPromptTemplate.from_messages(
     [
-        ("system", """You are the Supervisor Router for 'Pamorya', an elite apparel store AI.
+        (
+            "system",
+            """You are the Supervisor Router for 'Pamorya', an elite Sri Lankan apparel store AI.
 
-        **YOUR PRIMARY OBJECTIVE:** Analyze the conversation history and the latest user message to route the flow to the single best specialist agent. You are the traffic controller. You do not answer the user directly.
+**OBJECTIVE:** Analyse the conversation and route to exactly one specialist. You never answer the user directly.
 
-        **THE SPECIALISTS:**
-        1. **sales_agent** (HIGHEST PRIORITY): 
-           - OWNERSHIP: Closing deals, creating orders, collecting shipping info, confirming payments.
-           - TRIGGERS: 
-             * Explicit buying intent ("I want to buy", "add to cart", "purchase").
-             * Implicit buying intent (User selects a size/quantity after looking at a product).
-             * **CRITICAL:** Providing personal details ("My name is...", "Address:...", "071..."). 
-             * **CRITICAL:** If the *previous* message was from the bot asking for order details, the user's response belongs here.
+**SPECIALISTS:**
 
-        2. **data_query_agent** (INVENTORY & BROWSING): 
-           - OWNERSHIP: Checking stock, prices, sizes, and **Browsing Categories**.
-           - TRIGGERS: 
-             * Specifics: "Do you have...", "Show me...", "Price of...", "What sizes?".
-             * **Browsing:** "Do you have skirts?", "Show me tops", "What do you sell?", "Show me party wear".
-           - LIMITATION: If the user says "I want to buy the blue one", that is SALES, not DATA.
+1. **sales_agent** (HIGHEST PRIORITY)
+   - TRIGGERS: Buying intent, size/quantity selection after browsing, providing personal details (name/address/phone), cart actions (view, remove).
+   - If previous AI message asked for order details → user's reply goes here.
 
-        3. **rag_agent** (POLICY & CHAT): 
-           - OWNERSHIP: Store policies (Returns, Delivery times), general greetings ("Hi", "Thanks").
-           - TRIGGERS: "How long is shipping?", "Can I return this?", "Hello".
+2. **data_query_agent** (INVENTORY)
+   - TRIGGERS: Browsing categories, checking stock/price/sizes, searching specific products.
 
-        4. **web_search_agent** (EXTERNAL): 
-           - OWNERSHIP: Non-inventory fashion trends.
-           - TRIGGERS: "What is trending in Paris?", "Celebrity styles 2025".
-           - LIMITATION: Never use this for internal product questions.
+3. **rag_agent** (POLICY & GREETINGS)
+   - TRIGGERS: Shipping times, return policy, general greetings, store hours, brand info.
 
-        **DECISION LOGIC (Follow in Order):**
-        1. **CHECK FOR COMPLETION:** Did a tool just run and return a success message (like "COD_SUCCESS")? If yes -> Route to `__end__`.
-        2. **CHECK FOR CONTEXT:** Look at the *previous* AI message. 
-           - Did the AI ask "What is your name?" -> Route user's answer to `sales_agent`.
-        3. **CHECK FOR INTENT:**
-           - "I want to buy [Product]" -> `sales_agent`.
-           - "Show me [Category/Product]" -> `data_query_agent`.
-        4. **CHECK FOR COMPOSITE MESSAGES:** "Is [Product] in stock? I want to buy it." -> Route to `sales_agent` (Buying overrides browsing).
+4. **web_search_agent** (EXTERNAL TRENDS)
+   - TRIGGERS: Fashion trends, celebrity styles, external questions not about Pamorya inventory.
 
-        **OUTPUT:**
-        You must call the 'route' tool with the correct `next_node`.
-        """),
+5. **style_advisor** (FASHION ADVICE + IMAGE)
+   - TRIGGERS: User uploads an image asking for style advice, outfit combinations, "what goes with X", "does this suit me".
+   - ONLY when a user image is present in context OR explicitly asks for styling advice.
+
+6. **planner** (COMPLEX MULTI-STEP)
+   - TRIGGERS: Queries that require multiple steps — e.g. "Find me a full outfit for a wedding under LKR 15,000 with matching accessories".
+   - Do NOT use for simple single-intent queries.
+
+7. **reflection** (QUALITY CHECK)
+   - TRIGGERS: Only route here if the last AI response was clearly poor quality, too short, or missed the question. Use sparingly — max once per conversation turn.
+
+**DECISION ORDER:**
+1. If a tool just returned COD_SUCCESS → `__end__`
+2. If last AI message has no tool calls and gave a complete answer → `__end__`
+3. If user provided name/address/phone → `sales_agent`
+4. Buying intent → `sales_agent`
+5. Browsing/stock → `data_query_agent`
+6. Policy/greeting → `rag_agent`
+7. Image + style question → `style_advisor`
+8. Complex multi-step → `planner`
+9. External trends → `web_search_agent`
+
+Call the 'route' tool with the correct `next_node`.
+""",
+        ),
         MessagesPlaceholder(variable_name="messages"),
     ]
 )
 
 
-async def supervisor_router(state: AgentState):
-    print("\n--- Supervisor Routing ---")
-    messages = state["messages"]
+async def supervisor_router(state: AgentState) -> dict:
+    logger.info("--- Supervisor Routing ---")
+    messages = list(state["messages"])
     last_message = messages[-1]
 
     if isinstance(last_message, AIMessage) and not last_message.tool_calls:
-        print("Supervisor decided: -> __end__")
+        logger.info("Supervisor: clean AI response → __end__")
         return {"next": "__end__"}
 
     ai_response = await (supervisor_prompt | llm_with_route).ainvoke({"messages": messages})
 
+    next_node = "__end__"
     if ai_response.tool_calls:
         next_node = ai_response.tool_calls[0]["args"].get("next_node", "__end__")
-    else:
-        next_node = "__end__"
 
-    print(f"Supervisor decided: -> {next_node}")
+    logger.info("Supervisor → %s", next_node)
     return {"next": next_node}
 
 
-# --- 6. Define Conditional Edges ---
+# ---------------------------------------------------------------------------
+# 7. Memory Injector Node (Layer 3 — populated fully in Sprint 2)
+# ---------------------------------------------------------------------------
+async def memory_injector_node(state: AgentState) -> dict:
+    """
+    Layer 1: trim working memory to 8k tokens.
+    Layer 2: load episodic session context from Redis.
+    Layer 3: load semantic long-term facts from MongoDB Atlas.
+    Injects combined context string into state for downstream agents.
+    """
+    thread_id = state.get("thread_id", "")
+
+    # Layer 1 — trim working memory
+    trimmed = trim_messages(
+        list(state["messages"]),
+        max_tokens=8000,
+        strategy="last",
+        token_counter=llm_worker,
+        include_system=True,
+        allow_partial=False,
+    )
+    trimmed_delta = trimmed if trimmed != list(state["messages"]) else []
+
+    # Layer 2 — episodic (Redis)
+    session_ctx = {}
+    if thread_id:
+        try:
+            session_ctx = await asyncio.to_thread(episodic_memory.get_session_context, thread_id)
+        except Exception as e:
+            logger.warning("Episodic load failed: %s", e)
+
+    # Layer 3 — semantic (MongoDB)
+    semantic_ctx = ""
+    user_profile = state.get("user_profile", {})
+    if thread_id:
+        try:
+            semantic_ctx = await asyncio.to_thread(semantic_memory.format_as_context, thread_id)
+        except Exception as e:
+            logger.warning("Semantic load failed: %s", e)
+
+    parts = []
+    if semantic_ctx:
+        parts.append(f"Known user preferences:\n{semantic_ctx}")
+    if session_ctx.get("recent_products"):
+        parts.append(f"Recently viewed: {', '.join(session_ctx['recent_products'])}")
+
+    memory_context = "\n\n".join(parts) if parts else ""
+
+    return {
+        "messages": trimmed_delta,
+        "memory_context": memory_context,
+        "user_profile": user_profile,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8. Planner Node (Plan-and-Execute pattern)
+# ---------------------------------------------------------------------------
+PLANNER_PROMPT = """You are a planning assistant for Pamorya, a Sri Lankan fashion store.
+
+The user has a complex request that needs multiple steps. Break it down into 2–4 clear, ordered steps.
+Each step should be a single, actionable instruction for a specialist agent.
+
+Return ONLY a numbered list of steps. No preamble, no explanation.
+
+Example:
+1. Search inventory for wedding dresses under LKR 8000
+2. Search inventory for matching accessories (earrings, necklace)
+3. Check if the top 2 dress picks are in stock in size M
+4. Summarise a complete outfit recommendation with total price
+
+User request: {query}
+"""
+
+
+async def planner_node(state: AgentState) -> dict:
+    """Decomposes complex multi-step queries into an execution plan."""
+    logger.info("--- Planner Node ---")
+    last_human = next(
+        (m for m in reversed(list(state["messages"])) if isinstance(m, HumanMessage)),
+        None,
+    )
+    query = last_human.content if last_human else ""
+
+    plan_response = await llm_supervisor.ainvoke(
+        PLANNER_PROMPT.format(query=query)
+    )
+    plan_text = plan_response.content if isinstance(plan_response.content, str) else ""
+    steps = [
+        line.strip()
+        for line in plan_text.split("\n")
+        if line.strip() and line.strip()[0].isdigit()
+    ]
+
+    logger.info("Plan generated: %d steps", len(steps))
+    return {
+        "plan": steps,
+        "current_step": 0,
+        "messages": [AIMessage(content=f"I'll handle this step by step:\n{plan_text}")],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 9. RAG Agent Node
+# ---------------------------------------------------------------------------
+async def rag_agent_node(state: AgentState) -> dict:
+    logger.info("--- Policy Agent (RAG) ---")
+    messages = list(state["messages"])
+    last_human = next(
+        (m for m in reversed(messages) if isinstance(m, HumanMessage)), None
+    )
+    query = last_human.content if last_human else ""
+
+    memory_ctx = state.get("memory_context", "")
+    enriched_query = f"{query}\n\n[User context: {memory_ctx}]" if memory_ctx else query
+
+    response_str = await rag_agent_chain.ainvoke(enriched_query)
+    return {"messages": [AIMessage(content=response_str)]}
+
+
+# ---------------------------------------------------------------------------
+# 10. Data Query Agent Node
+# ---------------------------------------------------------------------------
+DATA_QUERY_SYSTEM = """You are an Inventory Assistant for 'Pamorya', a premium Sri Lankan apparel store.
+
+**YOUR TOOLS:**
+1. `get_available_categories()` — use first for "What do you sell?" or "What categories do you have?".
+2. `list_products(category_filter="...")` — use for browsing. Map user terms:
+   - dresses/frocks → 'Dresses'
+   - skirts → 'Skirts'
+   - pants/trousers → 'Pants & Trousers'
+   - tops/blouses → 'Tops & Blouses'
+   - sets/co-ords/matching sets → 'Sets & Co-ords'
+   - jumpers/knits → 'Jumpers & Knits'
+3. `query_product_database(search_query="...")` — use for specific items or colour/style queries.
+
+**RULES:**
+- Always include `<img src="...">` tags from tool output verbatim.
+- Never invent products — only use what tools return.
+- If "No products found", suggest checking other categories.
+{memory_section}
+"""
+
+
+async def data_query_agent_node(state: AgentState) -> dict:
+    logger.info("--- Data Query Agent ---")
+    memory_ctx = state.get("memory_context", "")
+    memory_section = f"\n**USER PREFERENCES (from memory):** {memory_ctx}" if memory_ctx else ""
+    system = DATA_QUERY_SYSTEM.format(memory_section=memory_section)
+    messages = [HumanMessage(content=system)] + list(state["messages"])
+    ai_response = await llm_query.ainvoke(messages)
+    return {"messages": [ai_response]}
+
+
+# ---------------------------------------------------------------------------
+# 11. Sales Agent Node
+# ---------------------------------------------------------------------------
+SALES_SYSTEM = """You are the Sales Agent for Pamorya. Secure the order efficiently and warmly.
+
+**PROCESS:**
+1. Clarify product, size, quantity (check recent conversation context for product name).
+2. If user responds with just size/qty, infer the product from recent messages.
+3. `view_cart` — when user asks to see their cart.
+4. `remove_from_cart` — when user asks to remove an item.
+5. `create_draft_order(product_name, size, quantity, thread_id)` — once you have all details. Show the total price returned.
+   - If OUT_OF_STOCK: apologise and list available sizes.
+6. Ask for: Full Name, Shipping Address, Phone Number.
+7. `confirm_order_details(customer_name, address, phone, thread_id)` — when all three are provided.
+   - If COD_SUCCESS returned: relay order number warmly and end.
+
+**TONE:** Professional, warm, efficient. Handle Sri Lankan addresses naturally.
+"""
+
+
+async def sales_agent_node(state: AgentState) -> dict:
+    logger.info("--- Sales Agent ---")
+    messages = [HumanMessage(content=SALES_SYSTEM)] + list(state["messages"])
+    return {"messages": [await llm_sales.ainvoke(messages)]}
+
+
+# ---------------------------------------------------------------------------
+# 12. Tool Executor Node (shared by data_query + sales)
+# ---------------------------------------------------------------------------
+async def data_query_tool_executor_node(state: AgentState, config: RunnableConfig) -> dict:
+    logger.info("--- Tool Executor ---")
+    messages = list(state["messages"])
+    last_message = messages[-1]
+
+    if not last_message.tool_calls:
+        return {"messages": []}
+
+    thread_id = (
+        config.get("configurable", {}).get("thread_id", "guest_user")
+        if config
+        else state.get("thread_id", "guest_user")
+    )
+
+    tasks = []
+    for tc in last_message.tool_calls:
+        name = tc["name"]
+        args = dict(tc["args"])
+        if name in {"create_draft_order", "confirm_order_details", "view_cart", "remove_from_cart"}:
+            args["thread_id"] = thread_id
+        logger.info(" -> tool=%s args=%s", name, args)
+        t = data_tool_lookup.get(name)
+        if not t:
+            tasks.append((tc["id"], None, f"Error: Tool '{name}' not found."))
+        else:
+            tasks.append((tc["id"], t, args))
+
+    tool_messages = []
+    for tool_id, t, args_or_err in tasks:
+        if t is None:
+            tool_messages.append(ToolMessage(content=str(args_or_err), tool_call_id=tool_id))
+            continue
+        try:
+            if hasattr(t, "ainvoke"):
+                result = await t.ainvoke(args_or_err)
+            else:
+                result = t.invoke(args_or_err)
+        except Exception as e:
+            result = f"Tool error: {e}"
+        tool_messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
+
+    logger.info("Tool results: %s", [m.content[:80] for m in tool_messages])
+    return {"messages": tool_messages}
+
+
+# ---------------------------------------------------------------------------
+# 13. Web Search Agent + Executor
+# ---------------------------------------------------------------------------
+WEB_SEARCH_SYSTEM = """You are a fashion trend researcher for Pamorya. Use `tavily_general_search` to find current, relevant information.
+Focus on: current fashion trends, celebrity styles, colour palettes, styling tips.
+Always relate findings back to what Pamorya might offer."""
+
+
+async def web_search_agent_node(state: AgentState) -> dict:
+    logger.info("--- Web Search Agent ---")
+    messages = [HumanMessage(content=WEB_SEARCH_SYSTEM)] + list(state["messages"])
+    ai_response = await llm_with_web_search_tools.ainvoke(messages)
+    return {"messages": [ai_response]}
+
+
+async def web_search_tool_executor_node(state: AgentState) -> dict:
+    logger.info("--- Web Search Executor ---")
+    messages = list(state["messages"])
+    last_message = messages[-1]
+    tool_messages = []
+
+    if not last_message.tool_calls:
+        return {"messages": []}
+
+    for tc in last_message.tool_calls:
+        t = web_search_tool_lookup.get(tc["name"])
+        if t:
+            try:
+                result = await asyncio.to_thread(t.invoke, tc["args"])
+            except Exception as e:
+                result = f"Search error: {e}"
+            tool_messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+
+    return {"messages": tool_messages}
+
+
+# ---------------------------------------------------------------------------
+# 14. Style Advisor Node (Multimodal — Gemini Vision)
+# ---------------------------------------------------------------------------
+STYLE_ADVISOR_SYSTEM = """You are Pamorya's personal style advisor. You specialise in Sri Lankan fashion and contemporary trends.
+
+When analysing outfit images:
+- Identify key garment types, colours, and patterns
+- Suggest Pamorya products that complement the user's existing wardrobe
+- Give specific, actionable styling advice
+- Consider the local climate (tropical) and cultural context
+
+If no image is provided, give advice based on the description.
+"""
+
+
+async def style_advisor_node(state: AgentState) -> dict:
+    """Multimodal style advice node. Handles both image+text and text-only queries."""
+    logger.info("--- Style Advisor ---")
+    messages = list(state["messages"])
+
+    memory_ctx = state.get("memory_context", "")
+    system_with_context = STYLE_ADVISOR_SYSTEM
+    if memory_ctx:
+        system_with_context += f"\n\n**User's known preferences:** {memory_ctx}"
+
+    full_messages = [HumanMessage(content=system_with_context)] + messages
+    response = await llm_vision.ainvoke(full_messages)
+    return {"messages": [response]}
+
+
+# ---------------------------------------------------------------------------
+# 15. Reflection Node (Reflexion pattern)
+# ---------------------------------------------------------------------------
+REFLECTION_PROMPT = """You are a quality reviewer for an AI fashion assistant.
+
+Review the last response and decide: is it good enough to send to the customer?
+
+GOOD: specific, helpful, answers the question, appropriate length.
+NEEDS_RETRY: vague, too short, missed the question, factually wrong.
+
+Last response: {last_response}
+
+Reply with exactly one word: GOOD or NEEDS_RETRY.
+Then on a new line, if NEEDS_RETRY, explain in one sentence what was wrong.
+"""
+
+
+async def reflection_node(state: AgentState) -> dict:
+    """Self-critique the last AI response. If poor quality, flag for retry."""
+    logger.info("--- Reflection Node ---")
+    messages = list(state["messages"])
+    last_ai = next(
+        (m for m in reversed(messages) if isinstance(m, AIMessage) and m.content),
+        None,
+    )
+    if not last_ai:
+        return {"next": "__end__"}
+
+    review = await llm_worker.ainvoke(
+        REFLECTION_PROMPT.format(last_response=str(last_ai.content)[:500])
+    )
+    review_text = review.content if isinstance(review.content, str) else ""
+    verdict = review_text.strip().split("\n")[0].strip().upper()
+
+    reflections = list(state.get("reflections", []))
+    reflections.append(review_text)
+
+    # Only retry once to avoid infinite loops
+    if verdict == "NEEDS_RETRY" and len(reflections) <= 1:
+        logger.info("Reflection: NEEDS_RETRY — looping back to supervisor")
+        return {"reflections": reflections, "next": "supervisor"}
+
+    logger.info("Reflection: %s", verdict)
+    return {"reflections": reflections, "next": "__end__"}
+
+
+# ---------------------------------------------------------------------------
+# 16. Memory Writer Node (Layer 3 — wired to MongoDB in Sprint 2)
+# ---------------------------------------------------------------------------
+MEMORY_EXTRACT_PROMPT = """Extract any user facts worth remembering from this conversation snippet.
+Facts to extract: preferred sizes, style preferences, budget range, favourite colours, past purchases.
+
+Conversation:
+{snippet}
+
+Return a JSON object with keys matching the fact types above. Only include facts that are explicitly stated.
+If nothing notable, return an empty object {{}}.
+"""
+
+
+async def memory_writer_node(state: AgentState) -> dict:
+    """
+    Extracts user facts from recent messages and persists them:
+    - Layer 3 (MongoDB): style preferences, sizes, budget, past purchases
+    - Layer 2 (Redis): recently viewed products (session-scoped)
+    Non-blocking — failures are logged and swallowed.
+    """
+    thread_id = state.get("thread_id", "")
+    if not thread_id:
+        return {}
+
+    messages = list(state["messages"])
+    recent = messages[-4:] if len(messages) >= 4 else messages
+    snippet = "\n".join(
+        f"{'User' if isinstance(m, HumanMessage) else 'AI'}: {str(m.content)[:200]}"
+        for m in recent
+    )
+
+    # Extract and persist facts asynchronously
+    async def _persist():
+        try:
+            response = await llm_worker.ainvoke(
+                MEMORY_EXTRACT_PROMPT.format(snippet=snippet)
+            )
+            raw = response.content if isinstance(response.content, str) else ""
+
+            import re as _re
+            json_match = _re.search(r"\{.*\}", raw, _re.DOTALL)
+            if not json_match:
+                return
+            facts: dict = __import__("json").loads(json_match.group())
+
+            CATEGORY_MAP = {
+                "preferred_sizes": "preferences",
+                "style_preferences": "preferences",
+                "budget_range": "preferences",
+                "favourite_colours": "preferences",
+                "past_purchases": "history",
+            }
+            for key, value in facts.items():
+                if value:
+                    category = CATEGORY_MAP.get(key, "preferences")
+                    await asyncio.to_thread(
+                        semantic_memory.put,
+                        thread_id, category, key, str(value),
+                    )
+            logger.info("Semantic memory updated for thread %s", thread_id)
+        except Exception as e:
+            logger.warning("Memory writer failed (non-fatal): %s", e)
+
+    asyncio.create_task(_persist())
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# 17. Deep Research Subgraph
+# ---------------------------------------------------------------------------
+class ResearchState(TypedDict):
+    query: str
+    search_results: list[str]
+    synthesis: str
+    hops: int
+
+
+async def research_search_node(state: ResearchState) -> dict:
+    """Single hop of web search."""
+    results = await asyncio.to_thread(web_search_tool.invoke, {"query": state["query"]})
+    current = list(state.get("search_results", []))
+    current.append(str(results))
+    return {"search_results": current, "hops": state.get("hops", 0) + 1}
+
+
+async def research_synthesize_node(state: ResearchState) -> dict:
+    """Synthesise all search results into a coherent answer."""
+    combined = "\n\n---\n\n".join(state.get("search_results", []))
+    prompt = f"""Synthesise these search results into a concise, useful answer about fashion/style.
+Focus on practical insights relevant to a Sri Lankan fashion shopper.
+
+Search results:
+{combined[:3000]}
+
+Synthesis:"""
+    response = await llm_worker.ainvoke(prompt)
+    return {"synthesis": response.content if isinstance(response.content, str) else ""}
+
+
+def should_continue_research(state: ResearchState) -> str:
+    if state.get("hops", 0) >= 2:
+        return "synthesize"
+    results = state.get("search_results", [])
+    if results and len(results[-1]) > 200:
+        return "synthesize"
+    return "search"
+
+
+research_graph = StateGraph(ResearchState)
+research_graph.add_node("search", research_search_node)
+research_graph.add_node("synthesize", research_synthesize_node)
+research_graph.set_entry_point("search")
+research_graph.add_conditional_edges("search", should_continue_research, {
+    "search": "search",
+    "synthesize": "synthesize",
+})
+research_graph.add_edge("synthesize", END)
+compiled_research_graph = research_graph.compile()
+
+
+async def deep_research_node(state: AgentState) -> dict:
+    """Multi-hop deep research node — wraps the research subgraph."""
+    logger.info("--- Deep Research Node ---")
+    last_human = next(
+        (m for m in reversed(list(state["messages"])) if isinstance(m, HumanMessage)),
+        None,
+    )
+    query = last_human.content if last_human else "fashion trends"
+
+    result = await compiled_research_graph.ainvoke({"query": query, "search_results": [], "hops": 0})
+    synthesis = result.get("synthesis", "No results found.")
+    return {"messages": [AIMessage(content=synthesis)]}
+
+
+# ---------------------------------------------------------------------------
+# 18. Conditional Edge Helpers
+# ---------------------------------------------------------------------------
 def check_for_tool_calls(state: AgentState) -> str:
-    last_message = state["messages"][-1]
-    return "continue_with_tools" if last_message.tool_calls else "supervisor"
+    last = state["messages"][-1]
+    return "continue_with_tools" if getattr(last, "tool_calls", None) else "supervisor"
 
 
-# --- 7. Build the Graph ---
-print("Building graph...")
+def reflection_edge(state: AgentState) -> str:
+    return state.get("next", "__end__")
+
+
+# ---------------------------------------------------------------------------
+# 19. Build the Graph
+# ---------------------------------------------------------------------------
+logger.info("Building LangGraph v0.3 graph...")
+
 workflow = StateGraph(AgentState)
 
 workflow.add_node("supervisor", supervisor_router)
+workflow.add_node("memory_injector", memory_injector_node)
+workflow.add_node("planner", planner_node)
 workflow.add_node("rag_agent", rag_agent_node)
 workflow.add_node("data_query_agent", data_query_agent_node)
 workflow.add_node("sales_agent", sales_agent_node)
 workflow.add_node("data_query_tool_executor", data_query_tool_executor_node)
-workflow.add_node("sales_tool_executor", data_query_tool_executor_node)  # Re-use the executor function
+workflow.add_node("sales_tool_executor", data_query_tool_executor_node)
 workflow.add_node("web_search_agent", web_search_agent_node)
 workflow.add_node("web_search_tool_executor", web_search_tool_executor_node)
+workflow.add_node("style_advisor", style_advisor_node)
+workflow.add_node("reflection", reflection_node)
+workflow.add_node("memory_writer", memory_writer_node)
+workflow.add_node("deep_research", deep_research_node)
 
-workflow.set_entry_point("supervisor")
+# Entry: memory injection first, then supervisor routing
+workflow.set_entry_point("memory_injector")
+workflow.add_edge("memory_injector", "supervisor")
 
-workflow.add_conditional_edges("supervisor", lambda state: state["next"])
+# Supervisor routes to specialists
+workflow.add_conditional_edges("supervisor", lambda s: s["next"])
 
-workflow.add_conditional_edges("rag_agent", check_for_tool_calls,
-                               {"continue_with_tools": "supervisor", "supervisor": "supervisor"})
-workflow.add_conditional_edges("data_query_agent", check_for_tool_calls,
-                               {"continue_with_tools": "data_query_tool_executor", "supervisor": "supervisor"})
-workflow.add_conditional_edges("sales_agent", check_for_tool_calls,
-                               {"continue_with_tools": "sales_tool_executor", "supervisor": "supervisor"})
-workflow.add_conditional_edges("web_search_agent", check_for_tool_calls,
-                               {"continue_with_tools": "web_search_tool_executor", "supervisor": "supervisor"})
+# Each agent: check for tool calls or return to supervisor
+workflow.add_conditional_edges(
+    "rag_agent", check_for_tool_calls,
+    {"continue_with_tools": "supervisor", "supervisor": "supervisor"},
+)
+workflow.add_conditional_edges(
+    "data_query_agent", check_for_tool_calls,
+    {"continue_with_tools": "data_query_tool_executor", "supervisor": "supervisor"},
+)
+workflow.add_conditional_edges(
+    "sales_agent", check_for_tool_calls,
+    {"continue_with_tools": "sales_tool_executor", "supervisor": "supervisor"},
+)
+workflow.add_conditional_edges(
+    "web_search_agent", check_for_tool_calls,
+    {"continue_with_tools": "web_search_tool_executor", "supervisor": "supervisor"},
+)
+workflow.add_conditional_edges(
+    "style_advisor", check_for_tool_calls,
+    {"continue_with_tools": "supervisor", "supervisor": "supervisor"},
+)
 
+# Executors return to their parent agents
 workflow.add_edge("data_query_tool_executor", "data_query_agent")
 workflow.add_edge("sales_tool_executor", "sales_agent")
 workflow.add_edge("web_search_tool_executor", "web_search_agent")
 
+# Planner → supervisor (to start executing the plan)
+workflow.add_edge("planner", "supervisor")
 
-# --- 8. Compile ---
-async def create_memory():
+# Deep research → memory_writer → end
+workflow.add_edge("deep_research", "memory_writer")
+workflow.add_edge("memory_writer", END)
+
+# Reflection can loop back to supervisor or end
+workflow.add_conditional_edges("reflection", reflection_edge, {
+    "supervisor": "supervisor",
+    "__end__": END,
+})
+
+# ---------------------------------------------------------------------------
+# 20. Compile with Checkpointer
+# ---------------------------------------------------------------------------
+async def create_memory() -> object:
     """
-    Create the LangGraph checkpointer.
-    Prefers PostgreSQL (survives deploys, handles concurrent writes).
-    Falls back to SQLite for local development.
+    Build the LangGraph checkpointer.
+    Production: AsyncPostgresSaver (Railway PostgreSQL).
+    Local dev: AsyncSqliteSaver fallback.
     """
     db_url = os.getenv("DATABASE_URL", "")
 
@@ -409,10 +856,7 @@ async def create_memory():
             from psycopg_pool import AsyncConnectionPool
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-            # psycopg3 accepts the standard postgresql:// URL.
-            # Railway may give postgres:// — normalise it.
             pg_url = db_url.replace("postgres://", "postgresql://")
-
             pool = AsyncConnectionPool(
                 conninfo=pg_url,
                 max_size=10,
@@ -421,18 +865,17 @@ async def create_memory():
             )
             await pool.open()
             checkpointer = AsyncPostgresSaver(pool)
-            # Creates the langgraph_checkpoint* tables if they don't exist
             await checkpointer.setup()
-            print("✅ Checkpointer: PostgreSQL (persistent, multi-instance safe)")
+            logger.info("Checkpointer: PostgreSQL (Railway)")
             return checkpointer
         except Exception as exc:
-            print(f"⚠️  PostgreSQL checkpointer unavailable ({exc}). Falling back to SQLite.")
+            logger.warning("PostgreSQL checkpointer failed (%s) — falling back to SQLite", exc)
 
     conn = await aiosqlite.connect("checkpoints.db")
-    print("✅ Checkpointer: SQLite (local dev mode)")
+    logger.info("Checkpointer: SQLite (local dev)")
     return AsyncSqliteSaver(conn=conn)
 
 
 memory = asyncio.run(create_memory())
 app = workflow.compile(checkpointer=memory)
-print("\n--- Graph Compiled Successfully! ---")
+logger.info("LangGraph v0.3 graph compiled successfully.")
