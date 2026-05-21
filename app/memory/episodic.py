@@ -60,7 +60,7 @@ class EpisodicMemory:
             raw = r.get(f"session:{thread_id}")
             return json.loads(raw) if raw else {}
         except Exception as e:
-            logger.warning("Episodic read error: %s", e)
+            logger.warning("Episodic read error: %s", e, exc_info=True)
             return {}
 
     def update_session_context(self, thread_id: str, updates: dict[str, Any]) -> None:
@@ -73,7 +73,7 @@ class EpisodicMemory:
             existing.update(updates)
             r.setex(key, SESSION_TTL, json.dumps(existing))
         except Exception as e:
-            logger.warning("Episodic write error: %s", e)
+            logger.warning("Episodic write error: %s", e, exc_info=True)
 
     def track_viewed_product(self, thread_id: str, product_name: str) -> None:
         r = _get_redis()
@@ -85,7 +85,7 @@ class EpisodicMemory:
             r.ltrim(key, 0, 4)  # keep last 5
             r.expire(key, SESSION_TTL)
         except Exception as e:
-            logger.warning("Episodic product track error: %s", e)
+            logger.warning("Episodic product track error: %s", e, exc_info=True)
 
     def get_recent_products(self, thread_id: str) -> list[str]:
         r = _get_redis()
@@ -94,6 +94,7 @@ class EpisodicMemory:
         try:
             return r.lrange(f"session:{thread_id}:products", 0, -1)
         except Exception:
+            logger.error("Episodic get_recent_products failed (thread=%s)", thread_id, exc_info=True)
             return []
 
     def clear_session(self, thread_id: str) -> None:
@@ -103,7 +104,7 @@ class EpisodicMemory:
         try:
             r.delete(f"session:{thread_id}", f"session:{thread_id}:products")
         except Exception as e:
-            logger.warning("Episodic clear error: %s", e)
+            logger.warning("Episodic clear error: %s", e, exc_info=True)
 
 
 # Module-level singleton

@@ -113,6 +113,7 @@ class SemanticMemory:
             doc = col.find_one({"namespace": ["users", thread_id, category], "key": key})
             return doc["value"]["content"] if doc else None
         except Exception:
+            logger.error("Semantic memory get failed (thread=%s, key=%s/%s)", thread_id, category, key, exc_info=True)
             return None
 
     def get_all_for_thread(self, thread_id: str) -> list[dict]:
@@ -128,6 +129,7 @@ class SemanticMemory:
             )
             return docs
         except Exception:
+            logger.error("Semantic memory get_all failed (thread=%s)", thread_id, exc_info=True)
             return []
 
     def format_as_context(self, thread_id: str) -> str:
@@ -173,6 +175,7 @@ class SemanticMemory:
             docs = list(col.find({"namespace": ["products", "trends"]}, {"_id": 0}))
             return [d["value"]["content"] for d in docs if "value" in d]
         except Exception:
+            logger.error("Semantic memory get_trends failed", exc_info=True)
             return []
 
 

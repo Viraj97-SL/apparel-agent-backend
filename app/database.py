@@ -14,9 +14,9 @@ _engine_kwargs = {
 }
 if not _is_sqlite:
     _engine_kwargs.update({
-        "pool_size": 30,
-        "max_overflow": 50,
-        "pool_timeout": 30,
+        "pool_size": 10,
+        "max_overflow": 20,
+        "pool_timeout": 10,
         "pool_use_lifo": True,
     })
 

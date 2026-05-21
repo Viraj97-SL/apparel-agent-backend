@@ -34,6 +34,26 @@ from app.models import Product, VtoSession
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+_TRUSTED_VTO_DOMAINS = frozenset({
+    "res.cloudinary.com",
+    "api.fashn.ai",
+    "replicate.delivery",
+    "pbxt.replicate.delivery",
+    "cdn.replicate.com",
+})
+
+
+def _is_trusted_vto_url(url: str) -> bool:
+    """Return True only for URLs from known-safe VTO image providers."""
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return any(host == d or host.endswith(f".{d}") for d in _TRUSTED_VTO_DOMAINS)
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -175,10 +195,16 @@ def get_job_status(job_id: str) -> dict:
         raw = _IN_MEMORY_JOBS.get(job_id)
     if raw:
         data = json.loads(raw)
-        # Add estimated seconds remaining based on elapsed time
         started = data.get("started_at", time.time())
         elapsed = time.time() - started
-        data["estimated_seconds_remaining"] = max(0, int(35 - elapsed))
+        # Mark stuck jobs as failed so users aren't left polling forever
+        if data.get("status") in ("queued", "processing") and elapsed > 300:
+            data["status"] = "failed"
+            data["error"] = "Job timed out — please try again."
+            data["message"] = _PROGRESS_MESSAGES["failed"]
+            data["estimated_seconds_remaining"] = 0
+        else:
+            data["estimated_seconds_remaining"] = max(0, int(35 - elapsed))
         return data
     return {
         "status": "not_found",
@@ -246,6 +272,9 @@ def download_image_temp(url: str, tag: str) -> Optional[str]:
     temp_path = f"temp_{tag}.jpg"
     if "localhost" in url or not url.startswith("http"):
         url = f"{CLOUDINARY_BASE_URL}{os.path.basename(url)}"
+    if not _is_trusted_vto_url(url):
+        logger.warning("Blocked download from untrusted domain: %s", url)
+        return None
     try:
         r = requests.get(url, stream=True, timeout=15)
         if r.status_code == 200:
@@ -506,7 +535,7 @@ def handle_vto_message(thread_id: str, user_text: str, image_path: Optional[str]
         job_id = str(uuid.uuid4())
         set_job_status(job_id, "queued")
 
-        asyncio.create_task(
+        task = asyncio.create_task(
             process_vto_job(
                 job_id=job_id,
                 thread_id=thread_id,
@@ -516,6 +545,15 @@ def handle_vto_message(thread_id: str, user_text: str, image_path: Optional[str]
                 product_category=product_data["category"] if product_data else vto.product_name,
             )
         )
+
+        def _vto_task_done(t: asyncio.Task) -> None:
+            if not t.cancelled() and t.exception():
+                logger.error(
+                    "VTO background task failed (job_id=%s): %s", job_id, t.exception()
+                )
+                set_job_status(job_id, "failed", error=str(t.exception()))
+
+        task.add_done_callback(_vto_task_done)
 
         return (
             f"✨ Generating your look with **{vto.product_name}**!\n\n"

@@ -176,11 +176,9 @@ async def ensure_tools():
         pass
 
 
-# Bootstrap tools synchronously for the module-level graph compile below.
-# nest_asyncio lets this work even if an event loop is already running (Railway).
-import nest_asyncio
-nest_asyncio.apply()
-asyncio.run(ensure_tools())
+# Tools are initialised in the FastAPI lifespan (server.py).
+# Do NOT call asyncio.run() here — it creates a throwaway event loop that
+# breaks the psycopg_pool AsyncConnectionPool used by the checkpointer.
 
 # ---------------------------------------------------------------------------
 # 5. Web Search Tool
@@ -557,7 +555,7 @@ async def data_query_tool_executor_node(state: AgentState, config: RunnableConfi
             if hasattr(t, "ainvoke"):
                 result = await t.ainvoke(args_or_err)
             else:
-                result = t.invoke(args_or_err)
+                result = await asyncio.to_thread(t.invoke, args_or_err)
         except Exception as e:
             result = f"Tool error: {e}"
         tool_messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
@@ -924,6 +922,7 @@ async def create_memory() -> object:
             pg_url = db_url.replace("postgres://", "postgresql://")
             pool = AsyncConnectionPool(
                 conninfo=pg_url,
+                min_size=2,
                 max_size=10,
                 open=False,
                 kwargs={"autocommit": True, "prepare_threshold": 0},
@@ -941,6 +940,5 @@ async def create_memory() -> object:
     return AsyncSqliteSaver(conn=conn)
 
 
-memory = asyncio.run(create_memory())
-app = workflow.compile(checkpointer=memory)
-logger.info("LangGraph v0.3 graph compiled successfully.")
+# Graph is compiled in server.py lifespan after the event loop is running.
+# `workflow` is exported so server.py can call workflow.compile(checkpointer=memory).

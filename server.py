@@ -32,8 +32,10 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 # --- AGENT IMPORTS ---
-from app.agent import app as rag_agent_app
+from app.agent import workflow, ensure_tools, create_memory
 from app.vto_agent import handle_vto_message
+
+rag_agent_app = None  # compiled in lifespan after the event loop is running
 from app.whatsapp_adapter import (
     parse_twilio_payload,
     download_whatsapp_image,
@@ -77,12 +79,20 @@ _INJECTION_PATTERNS = re.compile(
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global rag_agent_app
     print("🔄 Lifespan: Checking database status...")
     try:
         init_db()
         populate_initial_data()
     except Exception as exc:
-        print(f"❌ Startup Error: {exc}")
+        print(f"❌ DB Startup Error: {exc}")
+    try:
+        await ensure_tools()
+        memory = await create_memory()
+        rag_agent_app = workflow.compile(checkpointer=memory)
+        print("✅ LangGraph agent initialized.")
+    except Exception as exc:
+        print(f"❌ Agent Startup Error: {exc}")
     yield
     print("🛑 Shutdown: Server closing...")
 
@@ -234,6 +244,12 @@ async def chat(
     # 1. Ensure Thread ID
     if not thread_id:
         thread_id = str(uuid.uuid4())
+
+    if rag_agent_app is None:
+        return OutputChat(
+            response="Server is still starting up. Please try again in a moment.",
+            thread_id=thread_id,
+        )
 
     # 2. Input validation
     validation_error = validate_query(query)
