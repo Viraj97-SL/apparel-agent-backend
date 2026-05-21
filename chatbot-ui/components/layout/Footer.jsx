@@ -73,7 +73,7 @@ export default function Footer() {
         {/* Contact */}
         <div>
           <p style={{ fontSize: 'var(--text-xs)', letterSpacing: '0.1em', textTransform: 'uppercase', opacity: 0.5, marginBottom: '1rem' }}>Connect</p>
-          <p style={{ fontSize: 'var(--text-sm)', opacity: 0.7, marginBottom: '0.5rem' }}>WhatsApp: +94 7X XXX XXXX</p>
+          <p style={{ fontSize: 'var(--text-sm)', opacity: 0.7, marginBottom: '0.5rem' }}>WhatsApp: +94 71 330 5957</p>
           <p style={{ fontSize: 'var(--text-sm)', opacity: 0.7, marginBottom: '1.5rem' }}>hello@pamorya.lk</p>
           <div style={{ display: 'flex', gap: '1rem' }}>
             {['Instagram', 'Facebook', 'TikTok'].map((s) => (

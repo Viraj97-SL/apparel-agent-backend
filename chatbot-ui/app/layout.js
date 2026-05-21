@@ -1,11 +1,11 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "Pamorya — Premium AI Fashion",
+  title: "Pamorya - Premium AI Fashion",
   description: "Sri Lanka's first AI-powered personal stylist. Discover curated fashion, virtual try-on, and personalised styling advice.",
   keywords: "fashion, Sri Lanka, AI stylist, virtual try-on, women's clothing",
   openGraph: {
-    title: "Pamorya — Premium AI Fashion",
+    title: "Pamorya - Premium AI Fashion",
     description: "Sri Lanka's first AI-powered personal stylist.",
     type: "website",
   },
