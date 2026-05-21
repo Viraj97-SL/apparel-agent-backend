@@ -437,6 +437,9 @@ class VtoStatusResponse(BaseModel):
     status: str
     result_url: str
     error: str
+    message: str = ""
+    provider: str = ""
+    estimated_seconds_remaining: int = 0
 
 
 @app.post("/vto/start", response_model=VtoStartResponse)
@@ -535,7 +538,89 @@ async def vto_status(job_id: str):
         status=data.get("status", "not_found"),
         result_url=data.get("result_url", ""),
         error=data.get("error", ""),
+        message=data.get("message", ""),
+        provider=data.get("provider", ""),
+        estimated_seconds_remaining=data.get("estimated_seconds_remaining", 0),
     )
+
+
+# ---------------------------------------------------------------------------
+# TRENDING PRODUCTS ENDPOINT
+# ---------------------------------------------------------------------------
+
+# Cloudinary image URLs for known products (used to enrich DB results)
+_PRODUCT_IMAGE_MAP: dict[str, str] = {
+    "Wild Bloom Whisper": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769167858/PWBW01_v1lxc3.jpg",
+    "Midnight Velvet Dream": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694929/apparel_bot_products/PMVD011.jpg",
+    "Pink Rhapsody": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694925/apparel_bot_products/PPR02.jpg",
+    "Rosé Ruffle Gingham": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769960032/PRRGM059_03_fedgsr.jpg",
+    "White Wrap Daydress": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769960130/PWWD03_01_sfktbz.jpg",
+    "Blue Floral Bloom": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694935/apparel_bot_products/PFB019.jpg",
+    "Azure Teal Dream": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769960086/PATD044_03_iuenxy.jpg",
+    "Polished Sophistication": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769960161/PPS025_01_ax45ln.jpg",
+    "Crimson Canvas": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694935/apparel_bot_products/PCC010.jpg",
+    "The Every-Wear Edge": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694927/apparel_bot_products/PEWE06.jpg",
+    "Forest Glade Wrap": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1769960101/PFGW039_03_l67xv5.jpg",
+    "Summer Picnic Gingham": "https://res.cloudinary.com/dkftnrrjq/image/upload/v1765694928/apparel_bot_products/PSPG08.jpg",
+}
+
+_TRENDING_NAMES = list(_PRODUCT_IMAGE_MAP.keys())
+
+
+def _resolve_image(product) -> str | None:
+    """Return the best image URL for a product: map lookup → DB field → None."""
+    mapped = _PRODUCT_IMAGE_MAP.get(product.product_name)
+    if mapped:
+        return mapped
+    if product.image_url:
+        first = product.image_url.split(",")[0].strip()
+        return first if first.startswith("http") else None
+    return None
+
+
+@app.get("/api/trending")
+async def trending():
+    """Return up to 12 trending products with image URLs for the frontend."""
+    try:
+        from app.database import SessionLocal
+        from app.models import Product
+
+        with SessionLocal() as db:
+            # Prefer known trending products, then fill with any others
+            known = db.query(Product).filter(
+                Product.product_name.in_(_TRENDING_NAMES)
+            ).all()
+
+            result = [
+                {
+                    "product_name": p.product_name,
+                    "price": int(p.price) if p.price else 0,
+                    "category": p.category or "",
+                    "image_url": _resolve_image(p),
+                }
+                for p in known
+            ]
+
+            # Pad with other products if fewer than 6
+            if len(result) < 6:
+                others = db.query(Product).filter(
+                    Product.product_name.notin_(_TRENDING_NAMES)
+                ).limit(6 - len(result)).all()
+                result += [
+                    {
+                        "product_name": p.product_name,
+                        "price": int(p.price) if p.price else 0,
+                        "category": p.category or "",
+                        "image_url": _resolve_image(p),
+                    }
+                    for p in others
+                ]
+
+            return result[:12]
+
+    except Exception as e:
+        logger.warning("Trending endpoint error: %s", e)
+        return []
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,9 @@ Design principles:
 - Use SQLite in-memory for integration tests that need persistence.
 - Patch external services (Replicate, Tavily, Gemini) at the boundary.
 """
+import asyncio
 import os
+import sys
 import pytest
 import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,7 +23,32 @@ os.environ.setdefault("REPLICATE_API_TOKEN", "test-replicate-token")
 os.environ.setdefault("CLOUDINARY_CLOUD_NAME", "test-cloud")
 os.environ.setdefault("CLOUDINARY_API_KEY", "test-key")
 os.environ.setdefault("CLOUDINARY_API_SECRET", "test-secret")
-# Leave DATABASE_URL unset so agent falls back to SQLite checkpointer
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+
+# ---------------------------------------------------------------------------
+# Pre-import app.agent with asyncio.run stubbed so the module-level
+# asyncio.run(ensure_tools()) bootstrap is a no-op during tests.
+# We do this once here so subsequent test imports hit sys.modules cache.
+# ---------------------------------------------------------------------------
+_original_asyncio_run = asyncio.run
+
+
+def _stub_asyncio_run(coro, **kwargs):
+    """Swallow coroutines during module-level bootstrap."""
+    try:
+        coro.close()
+    except Exception:
+        pass
+    return None
+
+
+asyncio.run = _stub_asyncio_run
+try:
+    import app.agent  # noqa: F401  — populates sys.modules["app.agent"]
+except Exception:
+    pass
+finally:
+    asyncio.run = _original_asyncio_run
 
 
 # ---------------------------------------------------------------------------

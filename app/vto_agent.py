@@ -128,16 +128,37 @@ def _job_key(job_id: str) -> str:
     return f"vto_job:{job_id}"
 
 
-def set_job_status(job_id: str, status: str, result_url: str = "", error: str = "") -> None:
+_PROGRESS_MESSAGES = {
+    "queued":     "Preparing your try-on...",
+    "processing": "Generating your look — almost there!",
+    "completed":  "Your look is ready!",
+    "failed":     "Try-on unavailable — please try again.",
+    "not_found":  "Job not found.",
+}
+
+
+def set_job_status(
+    job_id: str,
+    status: str,
+    result_url: str = "",
+    error: str = "",
+    provider: str = "",
+) -> None:
     from app.memory.episodic import _get_redis
     r = _get_redis()
-    payload = json.dumps({"status": status, "result_url": result_url, "error": error})
+    payload = json.dumps({
+        "status": status,
+        "result_url": result_url,
+        "error": error,
+        "provider": provider,
+        "message": _PROGRESS_MESSAGES.get(status, ""),
+        "started_at": time.time(),
+    })
     if r:
         try:
             r.setex(_job_key(job_id), JOB_TTL, payload)
         except Exception:
             pass
-    # fallback: in-process dict for local dev
     _IN_MEMORY_JOBS[job_id] = payload
 
 
@@ -153,8 +174,19 @@ def get_job_status(job_id: str) -> dict:
     if raw is None:
         raw = _IN_MEMORY_JOBS.get(job_id)
     if raw:
-        return json.loads(raw)
-    return {"status": "not_found", "result_url": "", "error": ""}
+        data = json.loads(raw)
+        # Add estimated seconds remaining based on elapsed time
+        started = data.get("started_at", time.time())
+        elapsed = time.time() - started
+        data["estimated_seconds_remaining"] = max(0, int(35 - elapsed))
+        return data
+    return {
+        "status": "not_found",
+        "result_url": "",
+        "error": "",
+        "message": _PROGRESS_MESSAGES["not_found"],
+        "estimated_seconds_remaining": 0,
+    }
 
 
 _IN_MEMORY_JOBS: dict[str, str] = {}
@@ -235,7 +267,9 @@ async def run_fashn_vto(
     category: str,
 ) -> Optional[str]:
     """
-    Call Fashn.ai async API. Polls until result is ready (max 120s).
+    Call Fashn.ai async API with retry logic.
+    Retries submission up to 3 times with exponential backoff.
+    Polls until result is ready (max 120s per attempt).
     Returns the output image URL or None on failure.
     """
     if not FASHN_API_KEY:
@@ -244,48 +278,66 @@ async def run_fashn_vto(
 
     fashn_category = FASHN_CATEGORY_MAP.get(category, "upper-body")
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        # Submit job
-        try:
-            resp = await client.post(
-                f"{FASHN_BASE_URL}/run",
-                headers={"Authorization": f"Bearer {FASHN_API_KEY}"},
-                json={
-                    "model_image": person_image_url,
-                    "garment_image": garment_image_url,
-                    "category": fashn_category,
-                    "mode": "quality",
-                },
-            )
-            resp.raise_for_status()
-            prediction_id = resp.json().get("id")
-            if not prediction_id:
-                logger.error("Fashn.ai returned no prediction ID: %s", resp.text)
-                return None
-        except Exception as e:
-            logger.error("Fashn.ai submit failed: %s", e)
-            return None
-
-        # Poll for result (max 120s, every 4s)
-        for _ in range(30):
-            await asyncio.sleep(4)
+    for attempt in range(3):
+        async with httpx.AsyncClient(timeout=30) as client:
+            prediction_id = None
             try:
-                status_resp = await client.get(
-                    f"{FASHN_BASE_URL}/status/{prediction_id}",
+                resp = await client.post(
+                    f"{FASHN_BASE_URL}/run",
                     headers={"Authorization": f"Bearer {FASHN_API_KEY}"},
+                    json={
+                        "model_image": person_image_url,
+                        "garment_image": garment_image_url,
+                        "category": fashn_category,
+                        "mode": "quality",
+                    },
                 )
-                data = status_resp.json()
-                state = data.get("status", "")
-                if state == "completed":
-                    output = data.get("output") or data.get("image")
-                    return str(output) if output else None
-                if state == "failed":
-                    logger.error("Fashn.ai job failed: %s", data.get("error"))
+                if resp.status_code >= 500:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        "Fashn.ai %d on attempt %d — retrying in %ds",
+                        resp.status_code, attempt + 1, wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                prediction_id = resp.json().get("id")
+                if not prediction_id:
+                    logger.error("Fashn.ai returned no prediction ID: %s", resp.text)
                     return None
+            except httpx.HTTPStatusError:
+                raise
             except Exception as e:
-                logger.warning("Fashn.ai poll error: %s", e)
+                logger.error("Fashn.ai submit failed (attempt %d): %s", attempt + 1, e)
+                if attempt == 2:
+                    return None
+                await asyncio.sleep(2 ** attempt)
+                continue
 
-    logger.error("Fashn.ai timed out after 120s")
+            # Poll for result (max 120s, every 4s)
+            for _ in range(30):
+                await asyncio.sleep(4)
+                try:
+                    status_resp = await client.get(
+                        f"{FASHN_BASE_URL}/status/{prediction_id}",
+                        headers={"Authorization": f"Bearer {FASHN_API_KEY}"},
+                    )
+                    data = status_resp.json()
+                    state = data.get("status", "")
+                    if state == "completed":
+                        output = data.get("output") or data.get("image")
+                        return str(output) if output else None
+                    if state == "failed":
+                        logger.warning(
+                            "Fashn.ai job failed (attempt %d): %s",
+                            attempt + 1, data.get("error"),
+                        )
+                        break  # try next attempt
+                except Exception as e:
+                    logger.warning("Fashn.ai poll error: %s", e)
+            else:
+                logger.error("Fashn.ai timed out after 120s (attempt %d)", attempt + 1)
+
     return None
 
 
@@ -346,21 +398,22 @@ async def process_vto_job(
     cached = _get_cached_result(thread_id, product_name)
     if cached:
         logger.info("VTO cache hit for thread=%s product=%s", thread_id, product_name)
-        set_job_status(job_id, "completed", result_url=cached)
+        set_job_status(job_id, "completed", result_url=cached, provider="cache")
         return
 
     result_url: Optional[str] = None
+    provider_used = "unknown"
 
     # Primary: Fashn.ai (needs publicly accessible URLs — upload user image if local)
     if os.path.exists(user_image_path):
-        # For Fashn.ai we need a URL, not a file path.
-        # Try Cloudinary upload; fall through to Replicate if upload fails.
         try:
             import cloudinary.uploader  # type: ignore
             upload = cloudinary.uploader.upload(user_image_path, folder="pamorya_vto_users")
             user_image_url = upload.get("secure_url", "")
             if user_image_url:
                 result_url = await run_fashn_vto(user_image_url, product_image_url, product_category)
+                if result_url:
+                    provider_used = "fashn.ai"
         except Exception as e:
             logger.warning("Fashn.ai path (Cloudinary upload) failed: %s — trying Replicate", e)
 
@@ -375,11 +428,13 @@ async def process_vto_job(
             )
             if local_product and os.path.exists(local_product):
                 os.remove(local_product)
+            if result_url:
+                provider_used = "replicate"
 
     if result_url:
         _cache_result(thread_id, product_name, result_url)
-        set_job_status(job_id, "completed", result_url=result_url)
-        logger.info("VTO completed: job_id=%s url=%s", job_id, result_url)
+        set_job_status(job_id, "completed", result_url=result_url, provider=provider_used)
+        logger.info("VTO completed: job_id=%s provider=%s url=%s", job_id, provider_used, result_url)
     else:
         set_job_status(job_id, "failed", error="Both Fashn.ai and Replicate failed")
         logger.error("VTO failed for job_id=%s", job_id)

@@ -42,9 +42,9 @@ def _get_collection():
     if _collection is not None:
         return _collection
 
-    mongo_url = os.getenv("MONGODB_URL")
+    mongo_url = os.getenv("MONGODB_URI") or os.getenv("MONGODB_URL")
     if not mongo_url:
-        logger.warning("MONGODB_URL not set — semantic memory disabled")
+        logger.warning("MONGODB_URI / MONGODB_URL not set — semantic memory disabled")
         return None
 
     try:

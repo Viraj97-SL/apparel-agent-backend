@@ -20,7 +20,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_tavily import TavilySearch
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -31,7 +31,10 @@ import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from app.chat_with_rag import create_rag_chain
-from app.sales_tools import create_draft_order, confirm_order_details, view_cart, remove_from_cart
+from app.sales_tools import (
+    create_draft_order, confirm_order_details,
+    view_cart, remove_from_cart, get_order_status,
+)
 from app.observability import configure_langsmith, run_metadata
 from app.memory.episodic import episodic_memory
 from app.memory.semantic import semantic_memory
@@ -143,7 +146,10 @@ async def tool_lifespan():
             }
         )
         mcp_tools_list = await mcp_client.get_tools()
-        sales_tools_list = [create_draft_order, confirm_order_details, view_cart, remove_from_cart]
+        sales_tools_list = [
+            create_draft_order, confirm_order_details,
+            view_cart, remove_from_cart, get_order_status,
+        ]
 
         all_tools = mcp_tools_list + sales_tools_list
         data_tool_lookup = {t.name: t for t in all_tools}
@@ -179,7 +185,7 @@ asyncio.run(ensure_tools())
 # ---------------------------------------------------------------------------
 # 5. Web Search Tool
 # ---------------------------------------------------------------------------
-web_search_tool = TavilySearchResults(max_results=4, name="tavily_general_search")
+web_search_tool = TavilySearch(max_results=4, name="tavily_general_search")
 web_search_tools_list = [web_search_tool]
 llm_with_web_search_tools = llm_worker.bind_tools(web_search_tools_list)
 web_search_tool_lookup = {t.name: t for t in web_search_tools_list}
@@ -218,46 +224,54 @@ supervisor_prompt = ChatPromptTemplate.from_messages(
             "system",
             """You are the Supervisor Router for 'Pamorya', an elite Sri Lankan apparel store AI.
 
-**OBJECTIVE:** Analyse the conversation and route to exactly one specialist. You never answer the user directly.
+**OBJECTIVE:** Route to exactly one specialist. Never answer the user yourself.
 
 **SPECIALISTS:**
 
 1. **sales_agent** (HIGHEST PRIORITY)
-   - TRIGGERS: Buying intent, size/quantity selection after browsing, providing personal details (name/address/phone), cart actions (view, remove).
-   - If previous AI message asked for order details → user's reply goes here.
+   - User wants to buy, order, purchase, pay, or checkout
+   - User provides or corrects size, quantity, name, address, or phone number
+   - User asks to view cart, remove item, check order status, track delivery
+   - Previous AI message asked for order details → any user reply goes here
+   - User replies with ONLY a size ("M", "medium", "size 8") or number after browsing
 
 2. **data_query_agent** (INVENTORY)
-   - TRIGGERS: Browsing categories, checking stock/price/sizes, searching specific products.
+   - Browsing categories, checking stock/price/sizes, searching specific products
+   - "What dresses do you have?", "Show me tops under LKR 3000", "Is [X] in stock?"
 
 3. **rag_agent** (POLICY & GREETINGS)
-   - TRIGGERS: Shipping times, return policy, general greetings, store hours, brand info.
+   - Shipping times, return/exchange policy, store hours, brand info
+   - Greetings: hi, hello, thanks, bye
 
 4. **web_search_agent** (EXTERNAL TRENDS)
-   - TRIGGERS: Fashion trends, celebrity styles, external questions not about Pamorya inventory.
+   - Fashion trends, what's trending, celebrity styles, colour forecasts
+   - Any question about the outside fashion world, not Pamorya inventory
 
-5. **style_advisor** (FASHION ADVICE + IMAGE)
-   - TRIGGERS: User uploads an image asking for style advice, outfit combinations, "what goes with X", "does this suit me".
-   - ONLY when a user image is present in context OR explicitly asks for styling advice.
+5. **style_advisor** (FASHION ADVICE)
+   - User uploads image asking "does this suit me?" or "what goes with this?"
+   - Explicit requests for outfit combinations, colour matching, styling tips
 
 6. **planner** (COMPLEX MULTI-STEP)
-   - TRIGGERS: Queries that require multiple steps — e.g. "Find me a full outfit for a wedding under LKR 15,000 with matching accessories".
-   - Do NOT use for simple single-intent queries.
+   - "Find me a full outfit for a wedding under LKR 15,000" (multi-item, multi-constraint)
+   - Do NOT use for simple single-category queries
 
 7. **reflection** (QUALITY CHECK)
-   - TRIGGERS: Only route here if the last AI response was clearly poor quality, too short, or missed the question. Use sparingly — max once per conversation turn.
+   - Only if last AI response was clearly incomplete or missed the question
+   - Use at most once per conversation turn
 
-**DECISION ORDER:**
-1. If a tool just returned COD_SUCCESS → `__end__`
-2. If last AI message has no tool calls and gave a complete answer → `__end__`
-3. If user provided name/address/phone → `sales_agent`
-4. Buying intent → `sales_agent`
-5. Browsing/stock → `data_query_agent`
-6. Policy/greeting → `rag_agent`
-7. Image + style question → `style_advisor`
-8. Complex multi-step → `planner`
-9. External trends → `web_search_agent`
+**ROUTING RULES (in order):**
+1. Last ToolMessage contains "COD_SUCCESS" → `__end__` immediately
+2. Last AIMessage has no tool_calls and is a complete answer → `__end__`
+3. User provided name/address/phone number → `sales_agent`
+4. Any buying/ordering intent OR size reply after browsing → `sales_agent`
+5. Cart/order status request → `sales_agent`
+6. Browsing/stock/price → `data_query_agent`
+7. Policy/greeting → `rag_agent`
+8. Trends/external fashion → `web_search_agent`
+9. Image + style → `style_advisor`
+10. Complex multi-item outfit → `planner`
 
-Call the 'route' tool with the correct `next_node`.
+Call the 'route' tool with `next_node`.
 """,
         ),
         MessagesPlaceholder(variable_name="messages"),
@@ -269,6 +283,11 @@ async def supervisor_router(state: AgentState) -> dict:
     logger.info("--- Supervisor Routing ---")
     messages = list(state["messages"])
     last_message = messages[-1]
+
+    # Fast-path: COD confirmed → done
+    if isinstance(last_message, ToolMessage) and "COD_SUCCESS" in (last_message.content or ""):
+        logger.info("Supervisor: COD_SUCCESS tool result → __end__")
+        return {"next": "__end__"}
 
     if isinstance(last_message, AIMessage) and not last_message.tool_calls:
         logger.info("Supervisor: clean AI response → __end__")
@@ -410,20 +429,27 @@ async def rag_agent_node(state: AgentState) -> dict:
 DATA_QUERY_SYSTEM = """You are an Inventory Assistant for 'Pamorya', a premium Sri Lankan apparel store.
 
 **YOUR TOOLS:**
-1. `get_available_categories()` — use first for "What do you sell?" or "What categories do you have?".
-2. `list_products(category_filter="...")` — use for browsing. Map user terms:
-   - dresses/frocks → 'Dresses'
+1. `get_available_categories()` — for "What do you sell?" / "What categories do you have?"
+2. `list_products(category_filter="...")` — for browsing by category. Map user terms:
+   - dresses / frocks → 'Dresses'
    - skirts → 'Skirts'
-   - pants/trousers → 'Pants & Trousers'
-   - tops/blouses → 'Tops & Blouses'
-   - sets/co-ords/matching sets → 'Sets & Co-ords'
-   - jumpers/knits → 'Jumpers & Knits'
-3. `query_product_database(search_query="...")` — use for specific items or colour/style queries.
+   - pants / trousers → 'Pants & Trousers'
+   - tops / blouses / shirts → 'Tops & Blouses'
+   - sets / co-ords / matching / coordinates → 'Sets & Co-ords'
+   - jumpers / knits / knitwear → 'Jumpers & Knits'
+3. `query_product_database(search_query="...")` — for specific products, colours, or style keywords.
 
 **RULES:**
-- Always include `<img src="...">` tags from tool output verbatim.
-- Never invent products — only use what tools return.
-- If "No products found", suggest checking other categories.
+- Always include `<img src="...">` tags from tool output verbatim — don't remove them.
+- Never invent products. Use only what tools return.
+- If "No products found": suggest a related category or broader search.
+- After showing products, always end with:
+  "💬 To buy: just tell me which one you'd like and your size (e.g. 'I'll take the [name] in M')."
+
+**FOLLOW-UP QUERIES:**
+- "Show me more" → call the same tool again with offset or different filter
+- "In red / blue / any colour" → use `query_product_database(search_query="red dresses")`
+- "Cheaper" / "Under LKR X" → note the price filter and mention it when showing products
 {memory_section}
 """
 
@@ -441,20 +467,48 @@ async def data_query_agent_node(state: AgentState) -> dict:
 # ---------------------------------------------------------------------------
 # 11. Sales Agent Node
 # ---------------------------------------------------------------------------
-SALES_SYSTEM = """You are the Sales Agent for Pamorya. Secure the order efficiently and warmly.
+SALES_SYSTEM = """You are the Sales Agent for Pamorya, a premium Sri Lankan fashion store. Your job is to close orders warmly and efficiently.
 
-**PROCESS:**
-1. Clarify product, size, quantity (check recent conversation context for product name).
-2. If user responds with just size/qty, infer the product from recent messages.
-3. `view_cart` — when user asks to see their cart.
-4. `remove_from_cart` — when user asks to remove an item.
-5. `create_draft_order(product_name, size, quantity, thread_id)` — once you have all details. Show the total price returned.
-   - If OUT_OF_STOCK: apologise and list available sizes.
-6. Ask for: Full Name, Shipping Address, Phone Number.
-7. `confirm_order_details(customer_name, address, phone, thread_id)` — when all three are provided.
-   - If COD_SUCCESS returned: relay order number warmly and end.
+**TOOLS AVAILABLE:**
+- `create_draft_order(product_name, size, quantity, thread_id)` — adds item to cart
+- `view_cart(thread_id)` — shows current cart
+- `remove_from_cart(product_name, thread_id)` — removes item
+- `confirm_order_details(customer_name, address, phone, thread_id)` — confirms COD order
+- `get_order_status(order_number, thread_id)` — checks existing order status
 
-**TONE:** Professional, warm, efficient. Handle Sri Lankan addresses naturally.
+**STEP-BY-STEP PROCESS:**
+
+1. **Identify the product**: Look at the recent conversation. The user likely mentioned a product name. If unclear, ask once: "Which item would you like?"
+
+2. **Get size and quantity**: If the user just said a size (e.g. "M", "medium", "size 10"), pair it with the product from context. Default quantity is 1 unless stated.
+
+3. **Call create_draft_order**: Once you have product + size. Show the total and delivery estimate from the response.
+
+4. **Handle OUT_OF_STOCK**: If returned, apologise and list the available sizes clearly.
+
+5. **Collect delivery details**: Ask for all three in ONE message:
+   "To confirm your order, I just need:
+   1. Your full name
+   2. Delivery address (include city/district)
+   3. Phone number (for delivery coordination)"
+
+6. **Handle partial info**: If the user only provided some details, ask ONLY for the missing ones. Never ask for details already given.
+
+7. **Call confirm_order_details**: When you have name + address + phone.
+
+8. **On COD_SUCCESS**: Read the receipt JSON and relay warmly:
+   - Order number
+   - Items and total
+   - Delivery date estimate
+   - "We'll WhatsApp you at [phone] when dispatched"
+
+**EDGE CASES:**
+- User wants to change item → `remove_from_cart` → `create_draft_order` for the new item
+- User asks "how much total?" → `view_cart`
+- User asks "where is my order?" → `get_order_status`
+- User changes address mid-flow → note it and use the new one in `confirm_order_details`
+
+**TONE:** Warm, professional, concise. Handle Sri Lankan cities/addresses naturally (Colombo, Kandy, Galle, etc.).
 """
 
 
@@ -541,9 +595,20 @@ async def web_search_tool_executor_node(state: AgentState) -> dict:
         if t:
             try:
                 result = await asyncio.to_thread(t.invoke, tc["args"])
+                # Format as clean markdown so the web_search_agent receives readable text
+                if isinstance(result, list):
+                    formatted = "\n\n".join(
+                        f"**{r.get('title', '')}**\n{r.get('content', '')}\nSource: {r.get('url', '')}"
+                        for r in result
+                        if isinstance(r, dict)
+                    )
+                    content = formatted if formatted else str(result)
+                else:
+                    content = str(result)
             except Exception as e:
-                result = f"Search error: {e}"
-            tool_messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+                logger.warning("Web search tool error: %s", e)
+                content = f"Search unavailable: {e}"
+            tool_messages.append(ToolMessage(content=content, tool_call_id=tc["id"]))
 
     return {"messages": tool_messages}
 

@@ -38,6 +38,7 @@ replicate
 requests
 httpx
 tavily-python
+langchain-tavily>=0.1.0
 mcp
 python-dotenv
 nest_asyncio

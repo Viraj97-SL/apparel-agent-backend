@@ -5,16 +5,22 @@ from sqlalchemy.orm import sessionmaker
 
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    pool_size=30,              # Increased from 10
-    max_overflow=50,           # Increased from 20
-    pool_timeout=30,           # Increased from 5s → 30s
-    pool_recycle=3600,         # 1 hour
-    pool_pre_ping=True,        # Already good
-    pool_use_lifo=True,        # Better for high concurrency
-    echo=False                 # Set True only for debugging
-)
+_is_sqlite = (SQLALCHEMY_DATABASE_URL or "").startswith("sqlite")
+
+_engine_kwargs = {
+    "pool_recycle": 3600,
+    "pool_pre_ping": True,
+    "echo": False,
+}
+if not _is_sqlite:
+    _engine_kwargs.update({
+        "pool_size": 30,
+        "max_overflow": 50,
+        "pool_timeout": 30,
+        "pool_use_lifo": True,
+    })
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, **_engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
