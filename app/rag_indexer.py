@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
 load_dotenv()
@@ -17,19 +17,7 @@ project_root = os.path.dirname(script_dir)
 DATA_PATH = os.path.join(project_root, "data")
 INDEX_PATH = os.path.join(project_root, "faiss_index")
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-
-
 def create_vector_store():
-    """
-    Reads all .txt files from /data, embeds with Google text-embedding-004,
-    and saves the FAISS index.
-    Upgraded from HuggingFace MiniLM to Google text-embedding-004 for better
-    semantic understanding of fashion/apparel terminology.
-    """
-    if not GOOGLE_API_KEY:
-        raise ValueError("GOOGLE_API_KEY required to build the index.")
-
     logger.info("Loading documents from: %s", DATA_PATH)
     loader = DirectoryLoader(
         DATA_PATH,
@@ -53,11 +41,8 @@ def create_vector_store():
     docs = splitter.split_documents(documents)
     logger.info("Split into %d chunks", len(docs))
 
-    logger.info("Embedding with Google embedding-001...")
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=GOOGLE_API_KEY,
-    )
+    logger.info("Embedding with HuggingFace all-MiniLM-L6-v2...")
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
     db = FAISS.from_documents(docs, embeddings)
     db.save_local(INDEX_PATH)

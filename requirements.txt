@@ -29,6 +29,8 @@ faiss-cpu
 tiktoken
 pandas
 openpyxl
+langchain-huggingface>=0.1.0
+sentence-transformers>=2.2.0
 
 # === Tools & Integrations ===
 cloudinary
