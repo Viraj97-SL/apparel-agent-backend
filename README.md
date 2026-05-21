@@ -1,4 +1,4 @@
-# Pamorya AI Stylist — Multi-Agent RAG Chatbot for E-Commerce
+# Pamorya AI Stylist - Multi-Agent RAG Chatbot for E-Commerce
 
 A **production-deployed, multi-agent AI fashion assistant** built for [Pamorya](https://apparel-agent-frontend.vercel.app), a Sri Lankan clothing brand. The system uses **LangGraph v0.3** with a supervisor pattern to orchestrate specialised agents for product discovery, order management, virtual try-on, trend research, and style advice — all through natural conversation.
 
@@ -210,4 +210,4 @@ curl https://your-domain/api/trending
 
 ---
 
-**Built by [Viraj](https://github.com/Viraj97-SL)**
+**Built by [Viraj Bulugahapitiya - AI Engineer] (https://github.com/Viraj97-SL)**
