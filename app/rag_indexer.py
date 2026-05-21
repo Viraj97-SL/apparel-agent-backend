@@ -53,9 +53,9 @@ def create_vector_store():
     docs = splitter.split_documents(documents)
     logger.info("Split into %d chunks", len(docs))
 
-    logger.info("Embedding with Google text-embedding-004...")
+    logger.info("Embedding with Google embedding-001...")
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
+        model="models/embedding-001",
         google_api_key=GOOGLE_API_KEY,
     )
 

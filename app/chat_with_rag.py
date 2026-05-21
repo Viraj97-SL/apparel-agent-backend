@@ -28,7 +28,7 @@ def create_rag_chain():
     LLM: Gemini Flash (upgraded from Groq Llama 3.1).
     Embeddings: Google text-embedding-004 (upgraded from HuggingFace MiniLM).
     """
-    logger.info("Initializing RAG chain (Gemini Flash + text-embedding-004)...")
+    logger.info("Initializing RAG chain (Gemini Flash + embedding-001)...")
 
     llm = ChatGoogleGenerativeAI(
         model=GEMINI_WORKER_MODEL,
@@ -37,7 +37,7 @@ def create_rag_chain():
     )
 
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
+        model="models/embedding-001",
         google_api_key=GOOGLE_API_KEY,
     )
 
