@@ -1,6 +1,6 @@
 # Pamorya AI Stylist — Multi-Agent RAG Chatbot for E-Commerce
 
-A **production-deployed, multi-agent AI fashion assistant** built for [Pamorya](https://apparel-agent-frontend.vercel.app), a Sri Lankan clothing brand. The system uses **LangGraph** with a supervisor pattern to orchestrate specialised agents for product discovery, order management, restock alerts, and virtual try-on — all through natural conversation.
+A **production-deployed, multi-agent AI fashion assistant** built for [Pamorya](https://apparel-agent-frontend.vercel.app), a Sri Lankan clothing brand. The system uses **LangGraph v0.3** with a supervisor pattern to orchestrate specialised agents for product discovery, order management, virtual try-on, trend research, and style advice — all through natural conversation.
 
 > **Live Demo:** [apparel-agent-frontend.vercel.app](https://apparel-agent-frontend.vercel.app)
 
@@ -9,91 +9,111 @@ A **production-deployed, multi-agent AI fashion assistant** built for [Pamorya](
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    FastAPI Server                         │
-│              (Rate-limited, file-validated)               │
-├───────────────────────┬──────────────────────────────────┤
-│    /chat endpoint      │     Upload handling (VTO)        │
-└───────────┬───────────┴──────────────┬───────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                    FastAPI Server (Railway)                    │
+│              (Rate-limited, file-validated)                    │
+├───────────────────────┬──────────────────────────────────────┤
+│    /chat endpoint      │  /vto/start + /vto/status endpoints  │
+└───────────┬───────────┴──────────────┬───────────────────────┘
             │                          │
             ▼                          ▼
-┌───────────────────┐        ┌─────────────────────┐
-│  LangGraph Agent  │        │  VTO Agent           │
-│  (Supervisor)     │        │  (Replicate IDM-VTON)│
-└────────┬──────────┘        └─────────────────────┘
-         │
-         ├── Product Search Agent (MCP Tool → PostgreSQL)
-         │     ├── Exact match (SQL ILIKE)
-         │     ├── Keyword split fallback
-         │     └── Fuzzy match (difflib)
-         │
-         ├── RAG Agent (FAISS + sentence-transformers)
-         │     └── Policy/FAQ retrieval from text docs
-         │
-         ├── Order Management Agent (SQLAlchemy tools)
-         │     ├── Draft order creation
-         │     └── Order confirmation (COD)
-         │
-         └── Category Browser Agent (MCP Tool)
-               └── In-stock category listing
+┌─────────────────────────────┐  ┌─────────────────────────┐
+│  LangGraph v0.3 Agent Graph │  │  VTO Agent (async jobs)  │
+│  ┌──────────────────────┐   │  │  Primary:  Fashn.ai      │
+│  │  memory_injector     │   │  │  Fallback: Replicate     │
+│  │  supervisor (Gemini) │   │  │  Cache:    Redis (30d)   │
+│  │  planner             │   │  └─────────────────────────┘
+│  │  rag_agent           │   │
+│  │  data_query_agent    │   │
+│  │  sales_agent         │   │
+│  │  web_search_agent    │   │
+│  │  style_advisor       │   │
+│  │  reflection          │   │
+│  │  memory_writer       │   │
+│  └──────────────────────┘   │
+└─────────────────────────────┘
 
-┌──────────────────────────────────────────────────────────┐
-│                   PostgreSQL (Railway)                    │
-│  products │ inventory │ orders │ customers │ returns      │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                     3-Layer Memory                            │
+│  L1: trim_messages (working window, 8k tokens)               │
+│  L2: Redis (episodic — session cart, viewed products, 24h)   │
+│  L3: MongoDB Atlas (semantic — size prefs, style, history)   │
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│                  PostgreSQL (Railway)                          │
+│  products │ inventory │ orders │ customers │ vto_sessions     │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| **LLMs** | Google Gemini 2.5 Flash + Groq (Llama 3.1 8B) |
-| **Agent Framework** | LangGraph (supervisor + sub-agent pattern) |
+| **LLMs** | Google Gemini 2.5 Flash (workers) + Gemini 2.5 Pro (supervisor) |
+| **Agent Framework** | LangGraph v0.3 — Plan-and-Execute + Reflexion patterns |
 | **Tool Protocol** | MCP (Model Context Protocol) via FastMCP |
-| **Vector Store** | FAISS with `all-MiniLM-L6-v2` embeddings |
+| **Embeddings** | HuggingFace `all-MiniLM-L6-v2` (local, no API key) |
+| **Vector Store** | FAISS (built at container start from `data/` docs) |
+| **Web Search** | Tavily (`langchain-tavily`) — results formatted as markdown |
 | **API** | FastAPI + Uvicorn |
-| **Database** | PostgreSQL on Railway (SQLAlchemy ORM) |
+| **Database** | PostgreSQL on Railway (SQLAlchemy ORM + startup migrations) |
+| **Memory L2** | Redis (Railway plugin — episodic session cache) |
+| **Memory L3** | MongoDB Atlas M0 free — semantic long-term user facts |
 | **Image CDN** | Cloudinary |
-| **Virtual Try-On** | Replicate (IDM-VTON model) |
+| **Virtual Try-On** | Fashn.ai (primary, async + retry) → Replicate IDM-VTON (fallback) |
 | **Deployment** | Docker → Railway (backend), Vercel (frontend) |
 | **Rate Limiting** | slowapi (50 req/min) |
+| **Observability** | LangSmith (optional — set `LANGSMITH_API_KEY`) |
 
 ## Key Features
 
-- **Natural language product search** — handles exact matches, keyword splits, and fuzzy matching with fallback chains
+- **Multi-agent supervisor** — 9-node LangGraph graph routes queries to the right specialist: RAG, data query, sales, web search, style advisor, reflection
+- **Plan-and-Execute** — complex queries are decomposed into steps before execution
+- **Reflexion** — self-critique loop retries low-quality responses before sending to user
+- **3-layer memory** — working window + Redis session cache + MongoDB long-term facts
+- **Full sales funnel** — draft orders → cart management → COD confirmation with delivery date estimate, order number, and WhatsApp dispatch notification
+- **Order tracking** — `get_order_status` tool lets users check any order by number or thread
+- **Natural language product search** — exact match → keyword split → fuzzy fallback
 - **Real-time inventory** — size-level stock queries with out-of-stock detection
-- **Smart categorisation** — auto-detects product categories from names/descriptions
-- **Order flow** — draft orders, item addition, customer details, COD confirmation
 - **Restock notifications** — email alert registration for out-of-stock items
-- **Virtual Try-On** — upload a photo → AI generates you wearing any product (daily limit: 3)
-- **Conversation memory** — LangGraph checkpointer preserves context within threads
-- **Multi-image support** — products display up to 3 Cloudinary-hosted images
+- **Virtual Try-On (async)** — upload photo → Fashn.ai generates try-on → fallback to Replicate; 30-day result cache; retry with exponential backoff on 5xx
+- **Trending products** — `/api/trending` endpoint returns live product list with Cloudinary image URLs
+- **Web search** — Tavily results formatted as clean markdown (title + content + source)
+- **Conversation memory** — LangGraph PostgreSQL checkpointer preserves context across sessions
 
 ## Project Structure
 
 ```
-apparel-agent-backend/
+NewChatbot/
 ├── app/
-│   ├── agent.py              # LangGraph supervisor + routing logic
-│   ├── chat_with_rag.py      # RAG chain (FAISS retrieval + LLM)
+│   ├── agent.py              # LangGraph supervisor graph + all node logic
+│   ├── chat_with_rag.py      # RAG chain (FAISS + HuggingFace embeddings)
 │   ├── data_query_server.py  # MCP server — product/category tools
-│   ├── database.py           # SQLAlchemy engine + session factory
-│   ├── db_builder.py         # Excel → PostgreSQL data pipeline
+│   ├── database.py           # SQLAlchemy engine (SQLite-safe pool config)
+│   ├── db_builder.py         # Excel → PostgreSQL sync + startup migrations
 │   ├── models.py             # SQLAlchemy ORM models
+│   ├── observability.py      # LangSmith tracing setup
 │   ├── rag_indexer.py        # FAISS index builder
-│   ├── sales_tools.py        # Order management tools
-│   └── vto_agent.py          # Virtual try-on (Replicate API)
+│   ├── sales_tools.py        # Order tools (draft, confirm, cart, status)
+│   ├── vto_agent.py          # VTO (Fashn.ai + Replicate fallback, async)
+│   └── memory/
+│       ├── episodic.py       # Layer 2 — Redis session cache
+│       └── semantic.py       # Layer 3 — MongoDB Atlas long-term memory
 ├── tests/
+│   ├── conftest.py           # Shared fixtures + app.agent pre-import bootstrap
+│   ├── test_routing.py       # Supervisor routing logic (26 tests, all passing)
+│   ├── test_vto.py           # VTO pipeline: cache, retry, fallback, job store
+│   ├── test_memory.py        # Memory layers: Redis graceful degradation, Mongo
 │   ├── test_api.py
-│   ├── test_db_builder.py
-│   └── test_vto.py
-├── scripts/                  # One-off utilities
-│   ├── auto_link_images.py
-│   └── migrate_images.py
-├── data/                     # Source .txt files for RAG
-├── chatbot-ui/               # Frontend (HTML/CSS/JS)
-├── .github/workflows/ci.yml  # CI pipeline
-├── server.py                 # FastAPI entry point
+│   └── test_db_builder.py
+├── chatbot-ui/               # Next.js 15 frontend (Vercel)
+│   └── components/sections/
+│       ├── FeaturedCollections.jsx  # 12 real products + filter tabs
+│       └── TrendingSection.jsx      # Fetches /api/trending, real images
+├── data/                     # Source .txt files for RAG index
+├── server.py                 # FastAPI entry point + /api/trending endpoint
+├── start.sh                  # Container startup: build FAISS if missing, then uvicorn
 ├── Dockerfile
 ├── requirements.txt
 └── .env.example
@@ -116,6 +136,10 @@ cp .env.example .env
 # Fill in your API keys
 
 pip install -r requirements.txt
+
+# Build the FAISS index first
+python app/rag_indexer.py
+
 uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -124,37 +148,65 @@ uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```bash
 docker build -t pamorya-agent .
 docker run -p 8000:8000 --env-file .env pamorya-agent
+# FAISS index is built automatically at container start via start.sh
 ```
 
 ### Run Tests
 
 ```bash
-pip install pytest httpx pytest-asyncio
-pytest tests/ -v
+pip install -r requirements.txt
+pytest tests/test_routing.py tests/test_vto.py tests/test_memory.py -v
+# Expected: 26 passed
 ```
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GOOGLE_API_KEY` | Yes | Gemini 2.5 Flash/Pro |
+| `DATABASE_URL` | Yes | Railway PostgreSQL connection string |
+| `TAVILY_API_KEY` | Yes | Web search |
+| `CLOUDINARY_*` | Yes | Image CDN (3 vars) |
+| `REPLICATE_API_TOKEN` | Yes | VTO fallback |
+| `FASHN_API_KEY` | Yes | VTO primary |
+| `REDIS_URL` | Recommended | Layer 2 episodic memory (Railway Redis plugin) |
+| `MONGODB_URI` | Recommended | Layer 3 semantic memory (MongoDB Atlas M0 free) |
+| `LANGSMITH_API_KEY` | Optional | LangSmith tracing |
+| `HF_TOKEN` | Optional | Faster HuggingFace model downloads |
 
 ## API
 
 ```bash
-# Product search
+# Chat
 curl -X POST https://your-domain/chat \
-  -F "query=Show me blue dresses under 3000 LKR"
+  -F "query=Show me blue dresses under 3000 LKR" \
+  -F "thread_id=my-session-123"
 
-# Virtual try-on
-curl -X POST https://your-domain/chat \
-  -F "query=Try this dress on me" \
-  -F "mode=vto" \
+# Start VTO job
+curl -X POST https://your-domain/vto/start \
+  -F "thread_id=my-session-123" \
+  -F "product_name=Wild Bloom Whisper" \
   -F "file=@photo.jpg"
+
+# Poll VTO status
+curl https://your-domain/vto/status/{job_id}
+
+# Trending products (used by frontend TrendingSection)
+curl https://your-domain/api/trending
 ```
 
-## Roadmap
+## Changelog
 
-- [ ] LLM observability (LangSmith/LangFuse integration)
-- [ ] RAG evaluation pipeline (RAGAS metrics)
-- [ ] Streaming responses (SSE)
-- [ ] Output guardrails (hallucination prevention)
-- [ ] pgvector migration (replace FAISS)
-- [ ] Authentication layer
+### 2026-05-21 — Deep-Dive Sprint
+- **Sales agent overhaul**: delivery date estimation (next N business days skipping weekends), COD receipt with order number, WhatsApp dispatch notification message, `get_order_status` tool
+- **All sub-agent prompts rewritten**: handles partial customer info, mind changes, cart queries, price-after-add-to-cart
+- **Tavily upgrade**: migrated from deprecated `langchain_community.TavilySearchResults` to `langchain-tavily` package; web search results now formatted as clean markdown
+- **VTO hardening**: Fashn.ai retry with exponential backoff on 5xx, Replicate fallback chain, provider tracking, human-readable progress messages, `estimated_seconds_remaining` in status response
+- **TrendingSection**: real Cloudinary product images via new `/api/trending` endpoint
+- **3-layer memory infrastructure**: semantic memory supports both `MONGODB_URI` and `MONGODB_URL`; episodic memory ready for Railway Redis plugin
+- **Database migration**: `_apply_column_migrations()` runs `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` at startup — fixes `order_number` missing column on existing Railway deployments
+- **SQLite-safe pool config**: `database.py` excludes `max_overflow`/`pool_use_lifo` for SQLite (enables local testing with `sqlite:///:memory:`)
+- **Test suite**: 26 tests passing across `test_routing.py`, `test_vto.py`, `test_memory.py`
 
 ---
 

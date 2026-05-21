@@ -10,6 +10,28 @@ def init_db():
     """Idempotent table creation — creates any missing tables without touching existing ones."""
     print("--- 🔄 Ensuring all tables exist (create_all idempotent)... ---")
     Base.metadata.create_all(bind=engine)
+    _apply_column_migrations()
+
+
+def _apply_column_migrations():
+    """ADD COLUMN IF NOT EXISTS for columns added after initial deploy.
+    Safe to run on every startup — postgres IF NOT EXISTS makes it idempotent."""
+    migrations = [
+        # order_number added in sales overhaul sprint
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_number VARCHAR UNIQUE",
+        # thread_id added to link orders to chat sessions
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS thread_id VARCHAR",
+        # stripe_payment_id nullable extension
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS stripe_payment_id VARCHAR",
+    ]
+    with engine.connect() as conn:
+        for sql in migrations:
+            try:
+                conn.execute(__import__("sqlalchemy").text(sql))
+            except Exception as e:
+                print(f"Migration skipped ({e})")
+        conn.commit()
+    print("--- ✅ Column migrations applied ---")
 
 
 def clean_column_name(col_name):
