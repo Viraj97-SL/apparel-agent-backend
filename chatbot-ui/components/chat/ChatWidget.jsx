@@ -242,12 +242,14 @@ export default function ChatWidget({ compact = false }) {
   const [filePreviewUrl, setFilePreviewUrl] = useState(null);
   const [vtoJobId, setVtoJobId]     = useState(null);
 
-  const fileInputRef    = useRef(null);
-  const messagesEndRef  = useRef(null);
-  const vtoAbortRef     = useRef(null);
+  const fileInputRef         = useRef(null);
+  const messagesContainerRef = useRef(null);
+  const vtoAbortRef          = useRef(null);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!chatHistory.length && !isLoading) return;
+    const container = messagesContainerRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
   }, [chatHistory, isLoading]);
 
   useEffect(() => {
@@ -462,7 +464,7 @@ export default function ChatWidget({ compact = false }) {
       {mode === 'vto' && <VtoSteps step={vtoStep} />}
 
       {/* Messages */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      <div ref={messagesContainerRef} style={{ flex: 1, overflowY: 'auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
 
         {/* Empty state */}
         {chatHistory.length === 0 && !isLoading && (
@@ -558,7 +560,6 @@ export default function ChatWidget({ compact = false }) {
           </div>
         )}
 
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Input */}

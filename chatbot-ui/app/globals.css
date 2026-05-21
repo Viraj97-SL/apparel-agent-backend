@@ -63,7 +63,21 @@
 
 /* ─── Reset ────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  /* Prevent browser from restoring mid-page scroll position on load */
+  scroll-padding-top: 5rem;
+}
+
+/* ─── Responsive utilities ───────────────────────── */
+.hide-mobile    { display: flex; }
+.show-mobile-only { display: none !important; }
+
+@media (max-width: 768px) {
+  .hide-mobile      { display: none !important; }
+  .show-mobile-only { display: flex !important; }
+}
 
 body {
   background-color: var(--color-bg);
