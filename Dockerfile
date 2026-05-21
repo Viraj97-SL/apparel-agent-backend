@@ -26,14 +26,15 @@ RUN uv pip install --system --no-cache -r requirements.txt
 # 7. Copy the rest of your code
 COPY . .
 
-# 8. Create the directory for VTO uploads so the code doesn't crash
-RUN mkdir -p uploaded_images
+# 8. Create required directories
+RUN mkdir -p uploaded_images faiss_index
 
 # 9. Define Environment Variables
 ENV PYTHONUNBUFFERED=1
 
-# 10. Build the FAISS Vector Database
-RUN python app/rag_indexer.py
+# 10. Make the startup script executable
+RUN chmod +x start.sh
 
-# 11. Run the Application
-CMD uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}
+# 11. Run the Application (FAISS index is built at container startup, not build time,
+#     because GOOGLE_API_KEY is only available as a Railway runtime env var)
+CMD ["./start.sh"]
