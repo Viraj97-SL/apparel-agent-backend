@@ -79,7 +79,18 @@ FASHN_CATEGORY_MAP = {
     "Jackets & Outerwear":  "upper-body",
 }
 
-# Replicate fallback category mapping
+# CatVTON category mapping (primary Replicate fallback)
+CATVTON_CATEGORY_MAP = {
+    "Dresses":              "overall",
+    "Skirts":               "lower",
+    "Pants & Trousers":     "lower",
+    "Tops & Blouses":       "upper",
+    "Sets & Co-ords":       "overall",
+    "Jumpers & Knits":      "upper",
+    "Jackets & Outerwear":  "upper",
+}
+
+# IDM-VTON category mapping (secondary Replicate fallback)
 REPLICATE_CATEGORY_MAP = {
     "Dresses":              "dresses",
     "Skirts":               "lower_body",
@@ -371,33 +382,69 @@ async def run_fashn_vto(
 
 
 # ---------------------------------------------------------------------------
-# Replicate VTO (fallback — IDM-VTON)
+# Replicate VTO (fallback — CatVTON primary, IDM-VTON secondary)
 # ---------------------------------------------------------------------------
+def _extract_replicate_url(output) -> Optional[str]:
+    """Extract a URL string from various Replicate output types."""
+    if isinstance(output, list):
+        output = output[0] if output else None
+    if output is None:
+        return None
+    # FileOutput object (replicate >= 0.25)
+    if hasattr(output, "url"):
+        url = str(output.url)
+    else:
+        url = str(output)
+    if url.startswith("['") and url.endswith("']"):
+        url = url[2:-2]
+    return url if url.startswith("http") else None
+
+
 def run_replicate_vto_sync(
     user_image_path: str,
     product_image_path: str,
     product_name: str,
     product_category: str,
 ) -> Optional[str]:
-    """Synchronous Replicate call — run in a thread when used from async context."""
-    category = REPLICATE_CATEGORY_MAP.get(product_category, "dresses")
-    seed = random.randint(1, 9999)
+    """
+    Synchronous Replicate call — run in a thread when used from async context.
+    Tries CatVTON first (zhengchong/catvton), then IDM-VTON without a pinned
+    version hash as a last resort.
+    """
+    catvton_category = CATVTON_CATEGORY_MAP.get(product_category, "upper")
+
+    # Primary: CatVTON
     try:
         output = replicate.run(
-            "cuuupid/idm-vton:c871bb9b0466074280c2a9a7386749c8b0f4154817d1220268597f9c73335508",
+            "zhengchong/catvton",
+            input={
+                "person_image": open(user_image_path, "rb"),
+                "cloth_image":  open(product_image_path, "rb"),
+                "cloth_type":   catvton_category,
+            },
+        )
+        url = _extract_replicate_url(output)
+        if url:
+            return url
+        logger.warning("CatVTON returned no URL — trying IDM-VTON")
+    except Exception as e:
+        logger.warning("CatVTON failed (%s) — trying IDM-VTON", e)
+
+    # Secondary: IDM-VTON (no pinned version — uses latest deployment)
+    idm_category = REPLICATE_CATEGORY_MAP.get(product_category, "dresses")
+    try:
+        output = replicate.run(
+            "cuuupid/idm-vton",
             input={
                 "garm_img":    open(product_image_path, "rb"),
                 "human_img":   open(user_image_path, "rb"),
                 "garment_des": product_name,
-                "category":    category,
+                "category":    idm_category,
                 "crop":        False,
-                "seed":        seed,
+                "seed":        random.randint(1, 9999),
             },
         )
-        url = str(output)
-        if url.startswith("['") and url.endswith("']"):
-            url = url[2:-2]
-        return url if url.startswith("http") else None
+        return _extract_replicate_url(output)
     except Exception as e:
         logger.error("Replicate VTO error: %s", e)
         return None

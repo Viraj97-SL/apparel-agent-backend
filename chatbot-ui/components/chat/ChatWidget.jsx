@@ -221,7 +221,7 @@ async function pollVtoStatus(jobId, onResult, signal) {
     try {
       const res = await fetch(`${API_URL}/vto/status/${jobId}`, { signal });
       const data = await res.json();
-      if (data.status === 'done') { onResult({ success: true, response: data.result }); return; }
+      if (data.status === 'completed') { onResult({ success: true, response: data.result_url }); return; }
       if (data.status === 'failed') { onResult({ success: false, response: data.error || 'Try-on failed. Please try again.' }); return; }
     } catch (err) {
       if (err.name === 'AbortError') return;
@@ -290,16 +290,32 @@ export default function ChatWidget({ compact = false }) {
     clearFile();
     setIsLoading(true);
 
-    // VTO async path
-    if (mode === 'vto' && currentFile) {
+    // VTO async path — only when there's a product name to look up
+    const hasProductName = textToSend.trim().length > 2;
+    if (mode === 'vto' && hasProductName) {
       const formData = new FormData();
-      formData.append('query', textToSend || ' ');
-      if (threadId) formData.append('thread_id', threadId);
-      formData.append('file', currentFile);
+      formData.append('product_name', textToSend);
+      formData.append('thread_id', threadId || '');
+      if (currentFile) formData.append('file', currentFile);
 
       try {
         const res  = await fetch(`${API_URL}/vto/start`, { method: 'POST', body: formData });
         const data = await res.json();
+
+        // Save auto-generated thread_id from server
+        if (data.thread_id && !threadId) setThreadId(data.thread_id);
+
+        if (data.status === 'no_user_photo') {
+          setIsLoading(false);
+          setChatHistory(prev => [...prev, { role: 'ai', content: '📸 Please upload your photo first! Tap the 📎 icon to attach a full-body shot.' }]);
+          return;
+        }
+
+        if (data.status === 'product_not_found') {
+          setIsLoading(false);
+          setChatHistory(prev => [...prev, { role: 'ai', content: `I couldn't find **"${textToSend}"** in our catalogue. Try a name like "Crimson Canvas" or "Wild Bloom Whisper".` }]);
+          return;
+        }
 
         if (data.job_id) {
           setVtoJobId(data.job_id);
@@ -312,7 +328,10 @@ export default function ChatWidget({ compact = false }) {
           pollVtoStatus(data.job_id, ({ success, response }) => {
             setIsLoading(false);
             setVtoJobId(null);
-            setChatHistory(prev => [...prev, { role: 'ai', content: response }]);
+            const content = success && response?.startsWith('http')
+              ? `<img src="${response}" alt="Virtual Try-On result" style="max-width:100%;border-radius:8px;" />\n\nLooking great! Want to try another style? Just type another product name.`
+              : (response || 'Try-on failed. Please try again.');
+            setChatHistory(prev => [...prev, { role: 'ai', content }]);
           }, abortCtrl.signal);
           return;
         }

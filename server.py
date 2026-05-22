@@ -446,6 +446,7 @@ class VtoStartResponse(BaseModel):
     job_id: str
     status: str
     estimated_seconds: int
+    thread_id: str = ""
 
 
 class VtoStatusResponse(BaseModel):
@@ -462,7 +463,7 @@ class VtoStatusResponse(BaseModel):
 @limiter.limit("10/minute")
 async def vto_start(
     request: Request,
-    thread_id: str = Form(...),
+    thread_id: str = Form(""),
     product_name: str = Form(...),
     file: UploadFile = File(None),
 ):
@@ -478,6 +479,8 @@ async def vto_start(
     if not thread_id:
         thread_id = str(uuid.uuid4())
 
+    _err = lambda s: VtoStartResponse(job_id="", status=s, estimated_seconds=0, thread_id=thread_id)
+
     # Handle file upload
     image_path = None
     if file:
@@ -485,10 +488,10 @@ async def vto_start(
         size = file.file.tell()
         file.file.seek(0)
         if size > MAX_FILE_SIZE:
-            return VtoStartResponse(job_id="", status="error", estimated_seconds=0)
+            return _err("error")
         ext = (file.filename.lower().split(".")[-1] if "." in file.filename else "")
         if ext not in ALLOWED_EXTENSIONS:
-            return VtoStartResponse(job_id="", status="error", estimated_seconds=0)
+            return _err("error")
         safe_filename = f"{uuid.uuid4()}.{ext}"
         file_location = os.path.join(UPLOAD_DIR, safe_filename)
         with open(file_location, "wb+") as f:
@@ -501,14 +504,14 @@ async def vto_start(
 
     product_data = get_product_from_db(product_name)
     if not product_data:
-        return VtoStartResponse(job_id="", status="product_not_found", estimated_seconds=0)
+        return _err("product_not_found")
 
     # Cache check
     cached = _get_cached_result(thread_id, product_data["name"])
     if cached:
         job_id = str(uuid.uuid4())
         set_job_status(job_id, "completed", result_url=cached)
-        return VtoStartResponse(job_id=job_id, status="cached", estimated_seconds=0)
+        return VtoStartResponse(job_id=job_id, status="cached", estimated_seconds=0, thread_id=thread_id)
 
     # Resolve user image from session if not uploaded now
     db = SessionLocal()
@@ -518,11 +521,11 @@ async def vto_start(
             vto.user_image = image_path
         if not vto.user_image:
             db.close()
-            return VtoStartResponse(job_id="", status="no_user_photo", estimated_seconds=0)
+            return _err("no_user_photo")
         user_image = vto.user_image
         if not check_and_increment_limit(db, thread_id):
             db.close()
-            return VtoStartResponse(job_id="", status="daily_limit_reached", estimated_seconds=0)
+            return _err("daily_limit_reached")
         db.commit()
     finally:
         db.close()
@@ -541,7 +544,7 @@ async def vto_start(
         )
     )
 
-    return VtoStartResponse(job_id=job_id, status="queued", estimated_seconds=25)
+    return VtoStartResponse(job_id=job_id, status="queued", estimated_seconds=25, thread_id=thread_id)
 
 
 @app.get("/vto/status/{job_id}", response_model=VtoStatusResponse)
