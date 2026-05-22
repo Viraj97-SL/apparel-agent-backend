@@ -191,6 +191,74 @@ function VtoSteps({ step }) {
   );
 }
 
+function VtoActions({ resultUrl, productName, onBuyNow }) {
+  const handleDownload = async () => {
+    try {
+      const res = await fetch(resultUrl);
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'pamorya-tryon.jpg';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (_) {
+      window.open(resultUrl, '_blank');
+    }
+  };
+
+  const handleShare = async () => {
+    if (navigator.share) {
+      try { await navigator.share({ title: 'My Pamorya Try-On', url: resultUrl }); } catch (_) {}
+    } else {
+      try { await navigator.clipboard.writeText(resultUrl); } catch (_) {}
+    }
+  };
+
+  const handleWishlist = () => {
+    try {
+      const list = JSON.parse(localStorage.getItem('pamorya_wishlist') || '[]');
+      if (productName && !list.includes(productName)) {
+        list.push(productName);
+        localStorage.setItem('pamorya_wishlist', JSON.stringify(list));
+      }
+    } catch (_) {}
+  };
+
+  const btnBase = {
+    padding: '0.3rem 0.65rem',
+    borderRadius: '2px',
+    cursor: 'pointer',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '0.6rem',
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+    border: '1px solid var(--color-accent)',
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+      {[
+        { label: 'Download', fn: handleDownload, primary: false },
+        { label: 'Share', fn: handleShare, primary: false },
+        { label: 'Wishlist', fn: handleWishlist, primary: false },
+        { label: 'Buy Now', fn: onBuyNow, primary: true },
+      ].map(({ label, fn, primary }) => (
+        <button
+          key={label}
+          onClick={fn}
+          style={{
+            ...btnBase,
+            background: primary ? 'var(--color-accent)' : 'transparent',
+            color: primary ? '#fff' : 'var(--color-accent)',
+          }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function TypingDots() {
   return (
     <div style={{ display: 'flex', gap: '4px', padding: '4px 0', alignItems: 'center' }}>
@@ -232,19 +300,57 @@ async function pollVtoStatus(jobId, onResult, signal) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
+async function streamChat(text, currentThreadId, mode, onDelta, onThreadId) {
+  const params = new URLSearchParams({ query: text, mode: mode || 'standard' });
+  if (currentThreadId) params.append('thread_id', currentThreadId);
+
+  const response = await fetch(`${API_URL}/chat/stream?${params}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let accText = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const event = JSON.parse(line.slice(6));
+        if (event.type === 'init' && event.thread_id) {
+          onThreadId(event.thread_id);
+        } else if (event.type === 'delta' && event.text) {
+          accText += event.text;
+          onDelta(accText);
+        } else if (event.type === 'error') {
+          throw new Error(event.message || 'Stream error');
+        }
+      } catch (_) {}
+    }
+  }
+  return accText;
+}
+
 export default function ChatWidget({ compact = false }) {
-  const [query, setQuery]           = useState('');
-  const [chatHistory, setChatHistory] = useState([]);
-  const [threadId, setThreadId]     = useState(null);
-  const [isLoading, setIsLoading]   = useState(false);
-  const [mode, setMode]             = useState('standard');
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [query, setQuery]                 = useState('');
+  const [chatHistory, setChatHistory]     = useState([]);
+  const [threadId, setThreadId]           = useState(null);
+  const [isLoading, setIsLoading]         = useState(false);
+  const [mode, setMode]                   = useState('standard');
+  const [selectedFile, setSelectedFile]   = useState(null);
   const [filePreviewUrl, setFilePreviewUrl] = useState(null);
-  const [vtoJobId, setVtoJobId]     = useState(null);
+  const [vtoJobId, setVtoJobId]           = useState(null);
+  const [streamingContent, setStreamingContent] = useState('');
 
   const fileInputRef         = useRef(null);
   const messagesContainerRef = useRef(null);
   const vtoAbortRef          = useRef(null);
+  const vtoProductNameRef    = useRef('');
 
   useEffect(() => {
     if (!chatHistory.length && !isLoading) return;
@@ -293,6 +399,7 @@ export default function ChatWidget({ compact = false }) {
     // VTO async path — only when there's a product name to look up
     const hasProductName = textToSend.trim().length > 2;
     if (mode === 'vto' && hasProductName) {
+      vtoProductNameRef.current = textToSend.trim();
       const formData = new FormData();
       formData.append('product_name', textToSend);
       formData.append('thread_id', threadId || '');
@@ -328,10 +435,17 @@ export default function ChatWidget({ compact = false }) {
           pollVtoStatus(data.job_id, ({ success, response }) => {
             setIsLoading(false);
             setVtoJobId(null);
-            const content = success && response?.startsWith('http')
-              ? `<img src="${response}" alt="Virtual Try-On result" style="max-width:100%;border-radius:8px;" />\n\nLooking great! Want to try another style? Just type another product name.`
-              : (response || 'Try-on failed. Please try again.');
-            setChatHistory(prev => [...prev, { role: 'ai', content }]);
+            if (success && response?.startsWith('http')) {
+              setChatHistory(prev => [...prev, {
+                role: 'ai',
+                content: `<img src="${response}" alt="Virtual Try-On result" style="max-width:100%;border-radius:8px;" />\n\nLooking great! Want to try another style? Just type another product name.`,
+                isVtoResult: true,
+                vtoResultUrl: response,
+                vtoProductName: vtoProductNameRef.current,
+              }]);
+            } else {
+              setChatHistory(prev => [...prev, { role: 'ai', content: response || 'Try-on failed. Please try again.' }]);
+            }
           }, abortCtrl.signal);
           return;
         }
@@ -340,7 +454,49 @@ export default function ChatWidget({ compact = false }) {
       }
     }
 
-    // Standard chat path
+    // Standard chat — SSE streaming for text-only, POST for file uploads
+    if (!currentFile) {
+      try {
+        const reply = await streamChat(
+          textToSend || ' ',
+          threadId,
+          mode,
+          (partial) => setStreamingContent(partial),
+          (tid) => setThreadId(tid),
+        );
+
+        let finalReply = reply || "I apologise — I couldn't connect. Please try again.";
+        let receiptData = null;
+
+        try {
+          if (finalReply.includes('COD_SUCCESS')) {
+            const jsonMatch = finalReply.match(/\{[\s\S]*"status"\s*:\s*"COD_SUCCESS"[\s\S]*\}/);
+            if (jsonMatch) {
+              const parsed = JSON.parse(jsonMatch[0]);
+              if (parsed.status === 'COD_SUCCESS') {
+                receiptData = parsed;
+                finalReply = parsed.message || 'Order confirmed!';
+              }
+            }
+          }
+        } catch (_) {}
+
+        setChatHistory(prev => [
+          ...prev,
+          receiptData
+            ? { role: 'ai', content: finalReply, isReceipt: true, receiptData }
+            : { role: 'ai', content: finalReply },
+        ]);
+      } catch (_) {
+        setChatHistory(prev => [...prev, { role: 'ai', content: 'Connection error. Please check your internet and try again.' }]);
+      } finally {
+        setStreamingContent('');
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    // File upload path — POST /chat
     const formData = new FormData();
     formData.append('query', textToSend || ' ');
     formData.append('mode', mode);
@@ -377,11 +533,8 @@ export default function ChatWidget({ compact = false }) {
       ]);
       if (data.thread_id) setThreadId(data.thread_id);
 
-    } catch (err) {
-      setChatHistory(prev => [...prev, {
-        role: 'ai',
-        content: 'Connection error. Please check your internet and try again.',
-      }]);
+    } catch (_) {
+      setChatHistory(prev => [...prev, { role: 'ai', content: 'Connection error. Please check your internet and try again.' }]);
     } finally {
       setIsLoading(false);
     }
@@ -561,20 +714,32 @@ export default function ChatWidget({ compact = false }) {
               {msg.role === 'ai'
                 ? (msg.isReceipt
                   ? <><RichText text={msg.content} /><OrderReceipt data={msg.receiptData} /></>
-                  : renderContent(msg.content))
+                  : <>
+                      {renderContent(msg.content)}
+                      {msg.isVtoResult && (
+                        <VtoActions
+                          resultUrl={msg.vtoResultUrl}
+                          productName={msg.vtoProductName}
+                          onBuyNow={() => handleSubmit(null, `I'd like to buy the ${msg.vtoProductName}`)}
+                        />
+                      )}
+                    </>)
                 : msg.content}
             </div>
           </div>
         ))}
 
-        {/* Typing indicator */}
+        {/* Loading indicator — streaming text or typing dots */}
         {isLoading && (
           <div style={{ display: 'flex', justifyContent: 'flex-start', animation: 'fadeInUp 0.25s ease both' }}>
-            <div className="message-ai" style={{ padding: '0.7rem 1rem', borderRadius: '2px' }}>
+            <div className="message-ai" style={{ padding: '0.7rem 1rem', borderRadius: '2px', maxWidth: '80%' }}>
               <span style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: '0.6rem', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--color-accent)', marginBottom: '0.3rem' }}>
                 Pamorya Stylist
               </span>
-              <TypingDots />
+              {streamingContent
+                ? <><RichText text={streamingContent} /><span style={{ display: 'inline-block', width: '2px', height: '1em', background: 'var(--color-accent)', marginLeft: '1px', verticalAlign: 'text-bottom', animation: 'typingDot 0.8s ease-in-out infinite' }} /></>
+                : <TypingDots />
+              }
             </div>
           </div>
         )}

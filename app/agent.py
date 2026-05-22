@@ -202,6 +202,8 @@ class RouteArgs(BaseModel):
             "sales_agent",
             "web_search_agent",
             "style_advisor",
+            "visual_search",
+            "occasion_planner",
             "reflection",
             "__end__",
         ],
@@ -248,12 +250,23 @@ supervisor_prompt = ChatPromptTemplate.from_messages(
 5. **style_advisor** (FASHION ADVICE)
    - User uploads image asking "does this suit me?" or "what goes with this?"
    - Explicit requests for outfit combinations, colour matching, styling tips
+   - Image present but user wants styling tips/advice (NOT finding similar items)
 
-6. **planner** (COMPLEX MULTI-STEP)
+6. **visual_search** (IMAGE SEARCH)
+   - User uploads ANY image and wants to find similar items in the catalogue
+   - "Find something like this", "Do you have anything similar?", "Match this outfit"
+   - Image present + shopping/find/similar intent → visual_search (not style_advisor)
+
+7. **occasion_planner** (EVENT OUTFIT PLANNING)
+   - User has a specific event/occasion with a location, date, or budget constraint
+   - "I need an outfit for...", "What should I wear to...", "Planning for a..."
+   - Must involve an actual occasion, not just style browsing
+
+8. **planner** (COMPLEX MULTI-STEP)
    - "Find me a full outfit for a wedding under LKR 15,000" (multi-item, multi-constraint)
    - Do NOT use for simple single-category queries
 
-7. **reflection** (QUALITY CHECK)
+9. **reflection** (QUALITY CHECK)
    - Only if last AI response was clearly incomplete or missed the question
    - Use at most once per conversation turn
 
@@ -266,8 +279,10 @@ supervisor_prompt = ChatPromptTemplate.from_messages(
 6. Browsing/stock/price → `data_query_agent`
 7. Policy/greeting → `rag_agent`
 8. Trends/external fashion → `web_search_agent`
-9. Image + style → `style_advisor`
-10. Complex multi-item outfit → `planner`
+9. Image + shopping/find/similar intent → `visual_search`
+10. Image + style/advice intent → `style_advisor`
+11. Specific event with location/date/budget → `occasion_planner`
+12. Complex multi-item outfit → `planner`
 
 Call the 'route' tool with `next_node`.
 """,
@@ -573,10 +588,33 @@ Always relate findings back to what Pamorya might offer."""
 
 
 async def web_search_agent_node(state: AgentState) -> dict:
-    logger.info("--- Web Search Agent ---")
-    messages = [HumanMessage(content=WEB_SEARCH_SYSTEM)] + list(state["messages"])
-    ai_response = await llm_with_web_search_tools.ainvoke(messages)
-    return {"messages": [ai_response]}
+    logger.info("--- Web Search Agent (Gemini Grounding) ---")
+    messages = list(state["messages"])
+    last_human = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
+    query = last_human.content if last_human else "fashion trends"
+
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GOOGLE_API_KEY)
+        grounded_model = genai.GenerativeModel(
+            model_name=GEMINI_WORKER_MODEL,
+            tools="google_search_retrieval",
+        )
+        grounded_prompt = (
+            f"You are a fashion trend researcher for Pamorya, a premium Sri Lankan apparel store. "
+            f"Use Google Search to find current, relevant information about: {query}\n"
+            f"Focus on: current fashion trends, celebrity styles, colour palettes, styling tips. "
+            f"Always relate findings to what Pamorya might offer (dresses, tops, skirts, sets, knitwear)."
+        )
+        response = await asyncio.to_thread(grounded_model.generate_content, grounded_prompt)
+        answer = response.text
+        logger.info("Gemini grounding succeeded for web search")
+        return {"messages": [AIMessage(content=answer)]}
+    except Exception as e:
+        logger.warning("Gemini grounding failed (%s) — falling back to Tavily", e)
+        full_messages = [HumanMessage(content=WEB_SEARCH_SYSTEM)] + messages
+        ai_response = await llm_with_web_search_tools.ainvoke(full_messages)
+        return {"messages": [ai_response]}
 
 
 async def web_search_tool_executor_node(state: AgentState) -> dict:
@@ -639,6 +677,199 @@ async def style_advisor_node(state: AgentState) -> dict:
     full_messages = [HumanMessage(content=system_with_context)] + messages
     response = await llm_vision.ainvoke(full_messages)
     return {"messages": [response]}
+
+
+# ---------------------------------------------------------------------------
+# 14b. Visual Search Node (Image → catalogue matching)
+# ---------------------------------------------------------------------------
+VISUAL_SEARCH_PROMPT = """You are Pamorya's visual style search engine. Analyze the uploaded fashion image.
+
+Extract EXACTLY these attributes as a JSON object:
+{
+  "garment_type": "e.g. midi dress / crop top / wide-leg trousers",
+  "primary_colour": "e.g. dusty rose / navy blue",
+  "secondary_colours": ["e.g. white", "cream"],
+  "style_keywords": ["e.g. cottagecore", "floral", "puff sleeve", "relaxed fit"],
+  "occasion": "e.g. casual / formal / beach / office"
+}
+
+Return ONLY the JSON. No prose."""
+
+
+async def visual_search_node(state: AgentState) -> dict:
+    """Analyzes an uploaded image with Gemini vision then searches the product catalogue."""
+    import re as _re
+    import json as _json
+
+    logger.info("--- Visual Search Node ---")
+    messages = list(state["messages"])
+
+    vision_messages = [HumanMessage(content=VISUAL_SEARCH_PROMPT)] + messages
+    vision_response = await llm_vision.ainvoke(vision_messages)
+    vision_text = vision_response.content if isinstance(vision_response.content, str) else ""
+
+    attrs = {}
+    json_match = _re.search(r"\{.*\}", vision_text, _re.DOTALL)
+    if json_match:
+        try:
+            attrs = _json.loads(json_match.group())
+        except Exception:
+            attrs = {}
+
+    garment_type = attrs.get("garment_type", "dress")
+    primary_colour = attrs.get("primary_colour", "")
+    style_keywords = attrs.get("style_keywords", [])
+
+    search_query = f"{garment_type} {primary_colour} {' '.join(style_keywords[:2])}".strip()
+
+    product_results = ""
+    q_tool = data_tool_lookup.get("query_product_database")
+    if q_tool:
+        try:
+            if hasattr(q_tool, "ainvoke"):
+                product_results = await q_tool.ainvoke({"search_query": search_query})
+            else:
+                product_results = await asyncio.to_thread(q_tool.invoke, {"search_query": search_query})
+            product_results = str(product_results)
+        except Exception as e:
+            logger.warning("Visual search product lookup failed: %s", e)
+
+    style_summary = f"Detected: {garment_type}" + (f" in {primary_colour}" if primary_colour else "")
+
+    if product_results:
+        response_text = (
+            f"**Style detected:** {style_summary}\n\n"
+            f"**Similar items from Pamorya:**\n{product_results}"
+        )
+    else:
+        response_text = (
+            f"**Style detected:** {style_summary}\n\n"
+            "I wasn't able to search the catalogue right now — please try again in a moment."
+        )
+
+    return {"messages": [AIMessage(content=response_text)]}
+
+
+# ---------------------------------------------------------------------------
+# 14c. Occasion Planner Node (Event-based outfit planning)
+# ---------------------------------------------------------------------------
+OCCASION_EXTRACT_PROMPT = """Extract occasion details from this message as JSON:
+{{
+  "occasion_type": "e.g. beach wedding / office party / casual day out",
+  "venue_or_location": "e.g. Galle / Colombo / outdoor",
+  "date_or_timing": "e.g. next Saturday / this weekend / unknown",
+  "budget_lkr": 0,
+  "style_preference": "e.g. elegant / casual / beach-appropriate"
+}}
+Return ONLY the JSON.
+
+Message: {message}"""
+
+
+async def occasion_planner_node(state: AgentState) -> dict:
+    """Plans a complete outfit for a specific occasion using parallel product searches."""
+    import re as _re
+    import json as _json
+
+    logger.info("--- Occasion Planner Node ---")
+    messages = list(state["messages"])
+    last_human = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
+    user_message = last_human.content if last_human else ""
+
+    extract_response = await llm_worker.ainvoke(
+        OCCASION_EXTRACT_PROMPT.format(message=user_message)
+    )
+    extract_text = extract_response.content if isinstance(extract_response.content, str) else ""
+    occasion = {}
+    json_match = _re.search(r"\{.*\}", extract_text, _re.DOTALL)
+    if json_match:
+        try:
+            occasion = _json.loads(json_match.group())
+        except Exception:
+            occasion = {}
+
+    occasion_type = occasion.get("occasion_type", "special occasion")
+    venue = occasion.get("venue_or_location", "")
+    date_or_timing = occasion.get("date_or_timing", "unknown")
+    budget_lkr = occasion.get("budget_lkr", 0)
+    style_preference = occasion.get("style_preference", "elegant")
+
+    dress_query = f"{occasion_type} {style_preference} dress"
+    accessories_query = f"accessories earrings necklace {occasion_type}"
+    shoes_query = f"shoes sandals heels {style_preference}"
+
+    q_tool = data_tool_lookup.get("query_product_database")
+    dress_r = acc_r = shoes_r = ""
+    if q_tool:
+        try:
+            if hasattr(q_tool, "ainvoke"):
+                dress_r, acc_r, shoes_r = await asyncio.gather(
+                    q_tool.ainvoke({"search_query": dress_query}),
+                    q_tool.ainvoke({"search_query": accessories_query}),
+                    q_tool.ainvoke({"search_query": shoes_query}),
+                )
+            else:
+                dress_r, acc_r, shoes_r = await asyncio.gather(
+                    asyncio.to_thread(q_tool.invoke, {"search_query": dress_query}),
+                    asyncio.to_thread(q_tool.invoke, {"search_query": accessories_query}),
+                    asyncio.to_thread(q_tool.invoke, {"search_query": shoes_query}),
+                )
+            dress_r, acc_r, shoes_r = str(dress_r), str(acc_r), str(shoes_r)
+        except Exception as e:
+            logger.warning("Occasion planner product search failed: %s", e)
+            return {"messages": [AIMessage(content="Our product catalogue is temporarily unavailable. Please try again.")]}
+    else:
+        return {"messages": [AIMessage(content="Our product catalogue is temporarily unavailable. Please try again.")]}
+
+    weather_note = ""
+    if venue and venue.lower() not in ("unknown", "outdoor", ""):
+        try:
+            weather_result = await asyncio.to_thread(
+                web_search_tool.invoke, {"query": f"weather {venue} {date_or_timing}"}
+            )
+            weather_note = str(weather_result)[:200] if weather_result else ""
+        except Exception as e:
+            logger.warning("Weather lookup failed (non-fatal): %s", e)
+
+    budget_str = f"LKR {budget_lkr}" if budget_lkr else "not specified"
+    venue_str = venue or "not specified"
+    assemble_prompt = f"""You are Pamorya's personal stylist. Build a complete outfit recommendation.
+
+Occasion: {occasion_type}
+Location: {venue_str}
+Timing: {date_or_timing}
+Budget: {budget_str}
+Style: {style_preference}
+Weather info: {weather_note or 'not available'}
+
+Available dresses/tops:
+{dress_r[:600]}
+
+Available accessories:
+{acc_r[:400]}
+
+Available shoes:
+{shoes_r[:400]}
+
+Write a complete outfit recommendation using this EXACT format:
+**Your {occasion_type} outfit plan** ✨
+
+**The Look:**
+[2-3 sentence style description]
+
+**1. Dress/Top:** [product name + price from dress results]
+**2. Accessories:** [product from accessories results]
+**3. Shoes:** [product from shoes results]
+
+**Total:** ~LKR [estimated sum]
+
+[Weather note if available]
+
+💬 Ready to order the complete look? Just say "Yes, add all to cart" and I'll handle it!
+"""
+    final_response = await llm_supervisor.ainvoke(assemble_prompt)
+    response_text = final_response.content if isinstance(final_response.content, str) else str(final_response)
+    return {"messages": [AIMessage(content=response_text)]}
 
 
 # ---------------------------------------------------------------------------
@@ -852,6 +1083,8 @@ workflow.add_node("sales_tool_executor", data_query_tool_executor_node)
 workflow.add_node("web_search_agent", web_search_agent_node)
 workflow.add_node("web_search_tool_executor", web_search_tool_executor_node)
 workflow.add_node("style_advisor", style_advisor_node)
+workflow.add_node("visual_search", visual_search_node)
+workflow.add_node("occasion_planner", occasion_planner_node)
 workflow.add_node("reflection", reflection_node)
 workflow.add_node("memory_writer", memory_writer_node)
 workflow.add_node("deep_research", deep_research_node)
@@ -884,6 +1117,8 @@ workflow.add_conditional_edges(
     "style_advisor", check_for_tool_calls,
     {"continue_with_tools": "supervisor", "supervisor": "supervisor"},
 )
+workflow.add_edge("visual_search", "memory_writer")
+workflow.add_edge("occasion_planner", "memory_writer")
 
 # Executors return to their parent agents
 workflow.add_edge("data_query_tool_executor", "data_query_agent")

@@ -79,18 +79,7 @@ FASHN_CATEGORY_MAP = {
     "Jackets & Outerwear":  "upper-body",
 }
 
-# CatVTON category mapping (primary Replicate fallback)
-CATVTON_CATEGORY_MAP = {
-    "Dresses":              "overall",
-    "Skirts":               "lower",
-    "Pants & Trousers":     "lower",
-    "Tops & Blouses":       "upper",
-    "Sets & Co-ords":       "overall",
-    "Jumpers & Knits":      "upper",
-    "Jackets & Outerwear":  "upper",
-}
-
-# IDM-VTON category mapping (secondary Replicate fallback)
+# IDM-VTON category mapping (Replicate fallback)
 REPLICATE_CATEGORY_MAP = {
     "Dresses":              "dresses",
     "Skirts":               "lower_body",
@@ -382,7 +371,7 @@ async def run_fashn_vto(
 
 
 # ---------------------------------------------------------------------------
-# Replicate VTO (fallback — CatVTON primary, IDM-VTON secondary)
+# Replicate VTO (fallback — IDM-VTON, no pinned version hash)
 # ---------------------------------------------------------------------------
 def _extract_replicate_url(output) -> Optional[str]:
     """Extract a URL string from various Replicate output types."""
@@ -391,10 +380,7 @@ def _extract_replicate_url(output) -> Optional[str]:
     if output is None:
         return None
     # FileOutput object (replicate >= 0.25)
-    if hasattr(output, "url"):
-        url = str(output.url)
-    else:
-        url = str(output)
+    url = str(output.url) if hasattr(output, "url") else str(output)
     if url.startswith("['") and url.endswith("']"):
         url = url[2:-2]
     return url if url.startswith("http") else None
@@ -407,47 +393,36 @@ def run_replicate_vto_sync(
     product_category: str,
 ) -> Optional[str]:
     """
-    Synchronous Replicate call — run in a thread when used from async context.
-    Tries CatVTON first (zhengchong/catvton), then IDM-VTON without a pinned
-    version hash as a last resort.
+    IDM-VTON via Replicate. No pinned version — uses latest.
+    Retries once on rate-limit (Replicate resets burst in ~10s for low-credit accounts).
+    Run via asyncio.to_thread so the blocking sleep doesn't stall the event loop.
     """
-    catvton_category = CATVTON_CATEGORY_MAP.get(product_category, "upper")
-
-    # Primary: CatVTON
-    try:
-        output = replicate.run(
-            "zhengchong/catvton",
-            input={
-                "person_image": open(user_image_path, "rb"),
-                "cloth_image":  open(product_image_path, "rb"),
-                "cloth_type":   catvton_category,
-            },
-        )
-        url = _extract_replicate_url(output)
-        if url:
-            return url
-        logger.warning("CatVTON returned no URL — trying IDM-VTON")
-    except Exception as e:
-        logger.warning("CatVTON failed (%s) — trying IDM-VTON", e)
-
-    # Secondary: IDM-VTON (no pinned version — uses latest deployment)
     idm_category = REPLICATE_CATEGORY_MAP.get(product_category, "dresses")
-    try:
-        output = replicate.run(
-            "cuuupid/idm-vton",
-            input={
-                "garm_img":    open(product_image_path, "rb"),
-                "human_img":   open(user_image_path, "rb"),
-                "garment_des": product_name,
-                "category":    idm_category,
-                "crop":        False,
-                "seed":        random.randint(1, 9999),
-            },
-        )
-        return _extract_replicate_url(output)
-    except Exception as e:
-        logger.error("Replicate VTO error: %s", e)
-        return None
+
+    for attempt in range(2):
+        try:
+            output = replicate.run(
+                "cuuupid/idm-vton",
+                input={
+                    "garm_img":    open(product_image_path, "rb"),
+                    "human_img":   open(user_image_path, "rb"),
+                    "garment_des": product_name,
+                    "category":    idm_category,
+                    "crop":        False,
+                    "seed":        random.randint(1, 9999),
+                },
+            )
+            return _extract_replicate_url(output)
+        except Exception as e:
+            err = str(e).lower()
+            if ("throttled" in err or "rate limit" in err) and attempt == 0:
+                logger.warning("Replicate rate-limited — waiting 12s before retry")
+                time.sleep(12)
+                continue
+            logger.error("Replicate VTO error: %s", e)
+            return None
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -493,9 +468,9 @@ async def process_vto_job(
         except Exception as e:
             logger.warning("Fashn.ai path (Cloudinary upload) failed: %s — trying Replicate", e)
 
-    # Fallback: Replicate IDM-VTON (accepts local file handles)
+    # Fallback: Replicate (accepts local file handles)
     if not result_url:
-        logger.info("Falling back to Replicate IDM-VTON")
+        logger.info("Falling back to Replicate VTO")
         local_product = download_image_temp(product_image_url, "prod")
         if local_product:
             result_url = await asyncio.to_thread(

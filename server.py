@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import re
@@ -9,8 +10,9 @@ import uuid
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
@@ -352,6 +354,78 @@ async def chat(
         )
 
     return OutputChat(response=final_response, thread_id=thread_id)
+
+
+# ---------------------------------------------------------------------------
+# SSE STREAMING CHAT ENDPOINT
+# ---------------------------------------------------------------------------
+@app.get("/chat/stream")
+@limiter.limit("50/minute")
+async def chat_stream(
+    request: Request,
+    query: str = Query(...),
+    thread_id: str = Query(None),
+    mode: str = Query("standard"),
+):
+    validation_error = validate_query(query)
+
+    async def generate():
+        nonlocal thread_id
+        if not thread_id:
+            thread_id = str(uuid.uuid4())
+
+        if rag_agent_app is None:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Server starting up — please try again shortly.'})}\n\n"
+            return
+
+        if validation_error:
+            yield f"data: {json.dumps({'type': 'error', 'message': validation_error})}\n\n"
+            return
+
+        yield f"data: {json.dumps({'type': 'init', 'thread_id': thread_id})}\n\n"
+
+        config = {"configurable": {"thread_id": thread_id}}
+        await resolve_stale_state(config)
+
+        try:
+            async with asyncio.timeout(AGENT_TIMEOUT_SECONDS):
+                async for event in rag_agent_app.astream_events(
+                    {"messages": [HumanMessage(content=query)]},
+                    config=config,
+                    version="v2",
+                ):
+                    if event.get("event") == "on_chat_model_stream":
+                        chunk = event.get("data", {}).get("chunk")
+                        if chunk and chunk.content:
+                            raw = chunk.content
+                            if isinstance(raw, str):
+                                text = raw
+                            else:
+                                text = "".join(
+                                    p.get("text", "")
+                                    for p in raw
+                                    if isinstance(p, dict) and "text" in p
+                                )
+                            if text:
+                                yield f"data: {json.dumps({'type': 'delta', 'text': text})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        except asyncio.TimeoutError:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Response timed out — please try again.'})}\n\n"
+        except Exception as e:
+            logger.error("SSE stream error [%s]: %s", thread_id, e)
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Temporary error — please try again.'})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
