@@ -387,35 +387,74 @@ async def chat_stream(
         config = {"configurable": {"thread_id": thread_id}}
         await resolve_stale_state(config)
 
-        try:
-            async with asyncio.timeout(AGENT_TIMEOUT_SECONDS):
-                async for event in rag_agent_app.astream_events(
-                    {"messages": [HumanMessage(content=query)]},
-                    config=config,
-                    version="v2",
-                ):
-                    if event.get("event") == "on_chat_model_stream":
-                        chunk = event.get("data", {}).get("chunk")
-                        if chunk and chunk.content:
-                            raw = chunk.content
-                            if isinstance(raw, str):
-                                text = raw
-                            else:
-                                text = "".join(
-                                    p.get("text", "")
-                                    for p in raw
+        # Nodes that return a final user-facing AIMessage but use non-LangChain SDKs
+        # (e.g. web_search_agent uses google.genai directly) emit no on_chat_model_stream
+        # events. We catch their full response via on_chain_end as a fallback.
+        _RESPONSE_NODES = {
+            "web_search_agent", "sales_agent", "style_advisor",
+            "visual_search", "occasion_planner", "policy_agent",
+            "reflection", "deep_research",
+        }
+
+        max_retries = 1
+        for attempt in range(max_retries + 1):
+            try:
+                delta_emitted = False
+                async with asyncio.timeout(AGENT_TIMEOUT_SECONDS):
+                    async for event in rag_agent_app.astream_events(
+                        {"messages": [HumanMessage(content=query)]},
+                        config=config,
+                        version="v2",
+                    ):
+                        ev = event.get("event")
+
+                        if ev == "on_chat_model_stream":
+                            chunk = event.get("data", {}).get("chunk")
+                            if chunk and chunk.content:
+                                raw = chunk.content
+                                text = raw if isinstance(raw, str) else "".join(
+                                    p.get("text", "") for p in raw
                                     if isinstance(p, dict) and "text" in p
                                 )
-                            if text:
-                                yield f"data: {json.dumps({'type': 'delta', 'text': text})}\n\n"
+                                if text:
+                                    yield f"data: {json.dumps({'type': 'delta', 'text': text})}\n\n"
+                                    delta_emitted = True
 
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                        elif ev == "on_chain_end" and not delta_emitted:
+                            # Fallback: emit complete AIMessage for non-streaming nodes
+                            node_name = event.get("name", "")
+                            if node_name in _RESPONSE_NODES:
+                                output = event.get("data", {}).get("output") or {}
+                                msgs = output.get("messages", []) if isinstance(output, dict) else []
+                                last_ai = next(
+                                    (m for m in reversed(msgs) if isinstance(m, AIMessage)), None
+                                )
+                                if last_ai and last_ai.content:
+                                    raw = last_ai.content
+                                    text = raw if isinstance(raw, str) else "".join(
+                                        p.get("text", "") for p in raw
+                                        if isinstance(p, dict) and "text" in p
+                                    )
+                                    if text:
+                                        yield f"data: {json.dumps({'type': 'delta', 'text': text})}\n\n"
+                                        delta_emitted = True
 
-        except asyncio.TimeoutError:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Response timed out — please try again.'})}\n\n"
-        except Exception as e:
-            logger.error("SSE stream error [%s]: %s", thread_id, e)
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Temporary error — please try again.'})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                break  # success
+
+            except asyncio.TimeoutError:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Response timed out — please try again.'})}\n\n"
+                break
+            except Exception as e:
+                err_str = str(e).lower()
+                is_503 = "503" in err_str or "overloaded" in err_str or "unavailable" in err_str
+                if is_503 and attempt < max_retries:
+                    logger.warning("SSE [%s]: transient 503, retrying in 2s (attempt %d)", thread_id, attempt + 1)
+                    await asyncio.sleep(2)
+                    continue
+                logger.error("SSE stream error [%s]: %s", thread_id, e)
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Temporary error — please try again.'})}\n\n"
+                break
 
     return StreamingResponse(
         generate(),

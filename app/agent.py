@@ -725,9 +725,11 @@ async def visual_search_node(state: AgentState) -> dict:
     logger.info("--- Visual Search Node ---")
     messages = list(state["messages"])
 
-    # Sync invoke — prevents this intermediate extraction from appearing in the SSE stream
+    # Sync invoke with empty callbacks — asyncio.to_thread inherits contextvars including
+    # LangChain's callback context, so we must explicitly clear callbacks to prevent
+    # this intermediate extraction call from emitting on_chat_model_stream SSE events.
     vision_messages = [HumanMessage(content=VISUAL_SEARCH_PROMPT)] + messages
-    vision_response = await asyncio.to_thread(llm_vision.invoke, vision_messages)
+    vision_response = await asyncio.to_thread(llm_vision.invoke, vision_messages, {"callbacks": []})
     vision_text = vision_response.content if isinstance(vision_response.content, str) else ""
 
     attrs = {}
@@ -798,9 +800,11 @@ async def occasion_planner_node(state: AgentState) -> dict:
     last_human = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
     user_message = last_human.content if last_human else ""
 
-    # Sync invoke — prevents JSON extraction from leaking into the SSE stream
+    # Sync invoke with empty callbacks — asyncio.to_thread copies contextvars (including
+    # LangChain's var_child_runnable_config), so we must clear callbacks to prevent this
+    # intermediate extraction call from emitting on_chat_model_stream SSE events.
     extract_response = await asyncio.to_thread(
-        llm_worker.invoke, OCCASION_EXTRACT_PROMPT.format(message=user_message)
+        llm_worker.invoke, OCCASION_EXTRACT_PROMPT.format(message=user_message), {"callbacks": []}
     )
     extract_text = extract_response.content if isinstance(extract_response.content, str) else ""
     occasion = {}

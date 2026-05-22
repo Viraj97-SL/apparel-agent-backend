@@ -186,27 +186,21 @@ class TestSSEEventFormat:
 # ---------------------------------------------------------------------------
 class TestOccasionPlannerNonLeaking:
     """
-    The extraction step must use llm_worker.invoke (sync), not ainvoke,
+    The extraction step must use llm_worker.invoke (sync) with {"callbacks": []},
     so intermediate JSON output doesn't appear in the SSE stream.
+    asyncio.to_thread copies contextvars — explicit empty callbacks are required.
     """
 
-    def test_extraction_uses_sync_invoke(self):
-        import inspect
-        import ast
-        import textwrap
-
-        src_path = os.path.join(
-            os.path.dirname(__file__), "..", "app", "agent.py"
-        )
+    def _get_fn_src(self):
+        src_path = os.path.join(os.path.dirname(__file__), "..", "app", "agent.py")
         with open(src_path) as f:
             src = f.read()
-
-        # Find the occasion_planner_node function body
         start = src.find("async def occasion_planner_node")
         end = src.find("\nasync def ", start + 1)
-        fn_src = src[start:end]
+        return src[start:end]
 
-        # Must NOT contain ainvoke for the extraction prompt
+    def test_extraction_uses_sync_invoke(self):
+        fn_src = self._get_fn_src()
         extract_block_start = fn_src.find("OCCASION_EXTRACT_PROMPT")
         extract_block_end = fn_src.find("extract_text", extract_block_start)
         extract_block = fn_src[extract_block_start:extract_block_end]
@@ -217,6 +211,18 @@ class TestOccasionPlannerNonLeaking:
         )
         assert "to_thread" in extract_block or "asyncio.to_thread" in fn_src[:extract_block_end], (
             "Extraction must be wrapped in asyncio.to_thread"
+        )
+
+    def test_extraction_clears_callbacks(self):
+        fn_src = self._get_fn_src()
+        extract_block_start = fn_src.find("OCCASION_EXTRACT_PROMPT")
+        # Grab from the OCCASION_EXTRACT_PROMPT reference to the end of the to_thread call
+        extract_block_end = fn_src.find("extract_text", extract_block_start)
+        extract_block = fn_src[extract_block_start:extract_block_end]
+
+        assert '"callbacks"' in extract_block or "'callbacks'" in extract_block, (
+            "occasion_planner_node extraction must pass {\"callbacks\": []} to invoke() "
+            "to prevent asyncio.to_thread's contextvars copy from re-emitting stream events"
         )
 
 
@@ -289,7 +295,63 @@ class TestVtoStatusContract:
 
 
 # ---------------------------------------------------------------------------
-# 8. _extract_tool_text handles the exact production format from Railway logs
+# 8. SSE endpoint — on_chain_end fallback + 503 retry wired in server.py
+# ---------------------------------------------------------------------------
+class TestSSEEndpointRobustness:
+    """
+    Verify the server.py SSE endpoint has the two fixes needed for production:
+      1. on_chain_end fallback for non-streaming nodes (web_search_agent uses raw google.genai)
+      2. 503 retry logic for transient Google API UNAVAILABLE errors
+    """
+
+    def _get_generate_src(self):
+        src_path = os.path.join(os.path.dirname(__file__), "..", "server.py")
+        with open(src_path, encoding="utf-8") as f:
+            src = f.read()
+        # Extract the generate() function body inside chat_stream
+        start = src.find("async def generate()")
+        end = src.find("\n    return StreamingResponse", start)
+        return src[start:end]
+
+    def test_on_chain_end_fallback_present(self):
+        gen_src = self._get_generate_src()
+        assert "on_chain_end" in gen_src, (
+            "SSE generate() must handle on_chain_end events as a fallback for nodes "
+            "that use non-LangChain SDKs (e.g. web_search_agent with google.genai). "
+            "Without this, grounding results never reach the frontend."
+        )
+
+    def test_response_nodes_set_defined(self):
+        gen_src = self._get_generate_src()
+        assert "web_search_agent" in gen_src, (
+            "SSE generate() must include web_search_agent in the response nodes set "
+            "so on_chain_end fallback captures its output."
+        )
+
+    def test_503_retry_present(self):
+        gen_src = self._get_generate_src()
+        assert "503" in gen_src or "overloaded" in gen_src, (
+            "SSE generate() must detect 503/overloaded errors and retry at least once "
+            "to handle transient Google API UNAVAILABLE responses."
+        )
+
+    def test_retry_uses_sleep(self):
+        gen_src = self._get_generate_src()
+        assert "asyncio.sleep" in gen_src, (
+            "SSE 503 retry must include asyncio.sleep() backoff to avoid hammering "
+            "an overloaded API immediately."
+        )
+
+    def test_delta_emitted_guard_present(self):
+        gen_src = self._get_generate_src()
+        assert "delta_emitted" in gen_src, (
+            "SSE generate() must use a delta_emitted flag to prevent double-emission: "
+            "on_chain_end fallback must only fire when no streaming tokens have been sent yet."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 9. _extract_tool_text handles the exact production format from Railway logs
 # ---------------------------------------------------------------------------
 class TestProductionLogFormat:
     """Regression for the exact dict format seen in Railway logs."""
