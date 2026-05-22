@@ -594,19 +594,24 @@ async def web_search_agent_node(state: AgentState) -> dict:
     query = last_human.content if last_human else "fashion trends"
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=GOOGLE_API_KEY)
-        grounded_model = genai.GenerativeModel(
-            model_name=GEMINI_WORKER_MODEL,
-            tools="google_search_retrieval",
-        )
+        from google import genai as _genai
+        from google.genai import types as _genai_types
+
+        _client = _genai.Client(api_key=GOOGLE_API_KEY)
         grounded_prompt = (
             f"You are a fashion trend researcher for Pamorya, a premium Sri Lankan apparel store. "
             f"Use Google Search to find current, relevant information about: {query}\n"
             f"Focus on: current fashion trends, celebrity styles, colour palettes, styling tips. "
             f"Always relate findings to what Pamorya might offer (dresses, tops, skirts, sets, knitwear)."
         )
-        response = await asyncio.to_thread(grounded_model.generate_content, grounded_prompt)
+        response = await asyncio.to_thread(
+            _client.models.generate_content,
+            model=GEMINI_WORKER_MODEL,
+            contents=grounded_prompt,
+            config=_genai_types.GenerateContentConfig(
+                tools=[_genai_types.Tool(google_search=_genai_types.GoogleSearch())],
+            ),
+        )
         answer = response.text
         logger.info("Gemini grounding succeeded for web search")
         return {"messages": [AIMessage(content=answer)]}
@@ -680,6 +685,22 @@ async def style_advisor_node(state: AgentState) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Shared helper — MCP tools return list[{"type":"text","text":"..."}] or str
+# ---------------------------------------------------------------------------
+def _extract_tool_text(result) -> str:
+    if isinstance(result, str):
+        return result
+    if isinstance(result, list):
+        return "\n".join(
+            item.get("text", str(item)) if isinstance(item, dict) else str(item)
+            for item in result
+        )
+    if isinstance(result, dict):
+        return result.get("text", str(result))
+    return str(result)
+
+
+# ---------------------------------------------------------------------------
 # 14b. Visual Search Node (Image → catalogue matching)
 # ---------------------------------------------------------------------------
 VISUAL_SEARCH_PROMPT = """You are Pamorya's visual style search engine. Analyze the uploaded fashion image.
@@ -704,8 +725,9 @@ async def visual_search_node(state: AgentState) -> dict:
     logger.info("--- Visual Search Node ---")
     messages = list(state["messages"])
 
+    # Sync invoke — prevents this intermediate extraction from appearing in the SSE stream
     vision_messages = [HumanMessage(content=VISUAL_SEARCH_PROMPT)] + messages
-    vision_response = await llm_vision.ainvoke(vision_messages)
+    vision_response = await asyncio.to_thread(llm_vision.invoke, vision_messages)
     vision_text = vision_response.content if isinstance(vision_response.content, str) else ""
 
     attrs = {}
@@ -727,10 +749,10 @@ async def visual_search_node(state: AgentState) -> dict:
     if q_tool:
         try:
             if hasattr(q_tool, "ainvoke"):
-                product_results = await q_tool.ainvoke({"search_query": search_query})
+                raw = await q_tool.ainvoke({"search_query": search_query})
             else:
-                product_results = await asyncio.to_thread(q_tool.invoke, {"search_query": search_query})
-            product_results = str(product_results)
+                raw = await asyncio.to_thread(q_tool.invoke, {"search_query": search_query})
+            product_results = _extract_tool_text(raw)
         except Exception as e:
             logger.warning("Visual search product lookup failed: %s", e)
 
@@ -776,8 +798,9 @@ async def occasion_planner_node(state: AgentState) -> dict:
     last_human = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
     user_message = last_human.content if last_human else ""
 
-    extract_response = await llm_worker.ainvoke(
-        OCCASION_EXTRACT_PROMPT.format(message=user_message)
+    # Sync invoke — prevents JSON extraction from leaking into the SSE stream
+    extract_response = await asyncio.to_thread(
+        llm_worker.invoke, OCCASION_EXTRACT_PROMPT.format(message=user_message)
     )
     extract_text = extract_response.content if isinstance(extract_response.content, str) else ""
     occasion = {}
@@ -801,22 +824,27 @@ async def occasion_planner_node(state: AgentState) -> dict:
     q_tool = data_tool_lookup.get("query_product_database")
     dress_r = acc_r = shoes_r = ""
     if q_tool:
+        async def _search(query_str: str) -> str:
+            try:
+                if hasattr(q_tool, "ainvoke"):
+                    raw = await asyncio.wait_for(q_tool.ainvoke({"search_query": query_str}), timeout=15)
+                else:
+                    raw = await asyncio.wait_for(
+                        asyncio.to_thread(q_tool.invoke, {"search_query": query_str}), timeout=15
+                    )
+                return _extract_tool_text(raw)
+            except Exception as e:
+                logger.warning("Occasion planner search failed for '%s': %s", query_str, e)
+                return ""
+
         try:
-            if hasattr(q_tool, "ainvoke"):
-                dress_r, acc_r, shoes_r = await asyncio.gather(
-                    q_tool.ainvoke({"search_query": dress_query}),
-                    q_tool.ainvoke({"search_query": accessories_query}),
-                    q_tool.ainvoke({"search_query": shoes_query}),
-                )
-            else:
-                dress_r, acc_r, shoes_r = await asyncio.gather(
-                    asyncio.to_thread(q_tool.invoke, {"search_query": dress_query}),
-                    asyncio.to_thread(q_tool.invoke, {"search_query": accessories_query}),
-                    asyncio.to_thread(q_tool.invoke, {"search_query": shoes_query}),
-                )
-            dress_r, acc_r, shoes_r = str(dress_r), str(acc_r), str(shoes_r)
+            dress_r, acc_r, shoes_r = await asyncio.gather(
+                _search(dress_query),
+                _search(accessories_query),
+                _search(shoes_query),
+            )
         except Exception as e:
-            logger.warning("Occasion planner product search failed: %s", e)
+            logger.warning("Occasion planner parallel search failed: %s", e)
             return {"messages": [AIMessage(content="Our product catalogue is temporarily unavailable. Please try again.")]}
     else:
         return {"messages": [AIMessage(content="Our product catalogue is temporarily unavailable. Please try again.")]}
@@ -824,10 +852,11 @@ async def occasion_planner_node(state: AgentState) -> dict:
     weather_note = ""
     if venue and venue.lower() not in ("unknown", "outdoor", ""):
         try:
-            weather_result = await asyncio.to_thread(
-                web_search_tool.invoke, {"query": f"weather {venue} {date_or_timing}"}
+            weather_result = await asyncio.wait_for(
+                asyncio.to_thread(web_search_tool.invoke, {"query": f"weather {venue} {date_or_timing}"}),
+                timeout=8,
             )
-            weather_note = str(weather_result)[:200] if weather_result else ""
+            weather_note = _extract_tool_text(weather_result)[:200] if weather_result else ""
         except Exception as e:
             logger.warning("Weather lookup failed (non-fatal): %s", e)
 
