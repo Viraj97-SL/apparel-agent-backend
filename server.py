@@ -57,7 +57,8 @@ MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
 
 # Input guardrails
 MAX_QUERY_LENGTH = 2_000           # characters
-AGENT_TIMEOUT_SECONDS = 90         # cap a single agent run
+AGENT_TIMEOUT_SECONDS = 90         # cap a single agent run (used by /chat POST and /whatsapp)
+AGENT_HARD_LIMIT_SECONDS = 600     # absolute ceiling for SSE streaming runs (10 min)
 
 # CORS — restrict to known origins; override via env for flexibility
 _raw_origins = os.getenv(
@@ -396,11 +397,15 @@ async def chat_stream(
             "reflection", "deep_research",
         }
 
-        max_retries = 1
-        for attempt in range(max_retries + 1):
-            try:
-                delta_emitted = False
-                async with asyncio.timeout(AGENT_TIMEOUT_SECONDS):
+        result_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _agent_worker():
+            """Run the full LangGraph agent; put (type, content) tuples into result_queue.
+            Only puts ("error", msg) on genuine exceptions — never on timeout."""
+            max_retries = 1
+            for attempt in range(max_retries + 1):
+                try:
+                    delta_emitted = False
                     async for event in rag_agent_app.astream_events(
                         {"messages": [HumanMessage(content=query)]},
                         config=config,
@@ -417,11 +422,10 @@ async def chat_stream(
                                     if isinstance(p, dict) and "text" in p
                                 )
                                 if text:
-                                    yield f"data: {json.dumps({'type': 'delta', 'text': text})}\n\n"
+                                    await result_queue.put(("delta", text))
                                     delta_emitted = True
 
                         elif ev == "on_chain_end" and not delta_emitted:
-                            # Fallback: emit complete AIMessage for non-streaming nodes
                             node_name = event.get("name", "")
                             if node_name in _RESPONSE_NODES:
                                 output = event.get("data", {}).get("output") or {}
@@ -436,25 +440,52 @@ async def chat_stream(
                                         if isinstance(p, dict) and "text" in p
                                     )
                                     if text:
-                                        yield f"data: {json.dumps({'type': 'delta', 'text': text})}\n\n"
+                                        await result_queue.put(("delta", text))
                                         delta_emitted = True
 
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                break  # success
+                    await result_queue.put(("done", None))
+                    return
 
-            except asyncio.TimeoutError:
-                yield f"data: {json.dumps({'type': 'error', 'message': 'Response timed out — please try again.'})}\n\n"
-                break
-            except Exception as e:
-                err_str = str(e).lower()
-                is_503 = "503" in err_str or "overloaded" in err_str or "unavailable" in err_str
-                if is_503 and attempt < max_retries:
-                    logger.warning("SSE [%s]: transient 503, retrying in 2s (attempt %d)", thread_id, attempt + 1)
-                    await asyncio.sleep(2)
-                    continue
-                logger.error("SSE stream error [%s]: %s", thread_id, e)
-                yield f"data: {json.dumps({'type': 'error', 'message': 'Temporary error — please try again.'})}\n\n"
-                break
+                except Exception as e:
+                    err_str = str(e).lower()
+                    is_503 = "503" in err_str or "overloaded" in err_str or "unavailable" in err_str
+                    if is_503 and attempt < max_retries:
+                        logger.warning("SSE worker [%s]: transient 503, retrying in 2s (attempt %d)", thread_id, attempt + 1)
+                        await asyncio.sleep(2)
+                        continue
+                    logger.error("SSE worker error [%s]: %s", thread_id, e)
+                    await result_queue.put(("error", "Temporary error — please try again."))
+                    return
+
+        agent_task = asyncio.create_task(_agent_worker())
+
+        try:
+            deadline = asyncio.get_event_loop().time() + AGENT_HARD_LIMIT_SECONDS
+            while True:
+                time_left = deadline - asyncio.get_event_loop().time()
+                if time_left <= 0:
+                    agent_task.cancel()
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Request took too long — please try again.'})}\n\n"
+                    break
+                try:
+                    msg_type, content = await asyncio.wait_for(
+                        result_queue.get(),
+                        timeout=min(5.0, time_left),
+                    )
+                    if msg_type == "delta":
+                        yield f"data: {json.dumps({'type': 'delta', 'text': content})}\n\n"
+                    elif msg_type == "done":
+                        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                        break
+                    elif msg_type == "error":
+                        yield f"data: {json.dumps({'type': 'error', 'message': content})}\n\n"
+                        break
+                except asyncio.TimeoutError:
+                    # Queue empty for 5s — agent is still running, send heartbeat
+                    yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
+        finally:
+            if not agent_task.done():
+                agent_task.cancel()
 
     return StreamingResponse(
         generate(),

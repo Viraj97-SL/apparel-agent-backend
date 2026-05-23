@@ -38,6 +38,7 @@ from app.sales_tools import (
 from app.observability import configure_langsmith, run_metadata
 from app.memory.episodic import episodic_memory
 from app.memory.semantic import semantic_memory
+from app.cache.semantic_cache import rag_cache, web_cache
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -429,10 +430,16 @@ async def rag_agent_node(state: AgentState) -> dict:
     )
     query = last_human.content if last_human else ""
 
+    cached = await asyncio.to_thread(rag_cache.get, query)
+    if cached:
+        logger.info("RAG: semantic cache hit")
+        return {"messages": [AIMessage(content=cached)]}
+
     memory_ctx = state.get("memory_context", "")
     enriched_query = f"{query}\n\n[User context: {memory_ctx}]" if memory_ctx else query
 
     response_str = await rag_agent_chain.ainvoke(enriched_query)
+    asyncio.create_task(asyncio.to_thread(rag_cache.put, query, response_str))
     return {"messages": [AIMessage(content=response_str)]}
 
 
@@ -593,6 +600,11 @@ async def web_search_agent_node(state: AgentState) -> dict:
     last_human = next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
     query = last_human.content if last_human else "fashion trends"
 
+    cached = await asyncio.to_thread(web_cache.get, query)
+    if cached:
+        logger.info("Web search: semantic cache hit")
+        return {"messages": [AIMessage(content=cached)]}
+
     try:
         from google import genai as _genai
         from google.genai import types as _genai_types
@@ -604,19 +616,23 @@ async def web_search_agent_node(state: AgentState) -> dict:
             f"Focus on: current fashion trends, celebrity styles, colour palettes, styling tips. "
             f"Always relate findings to what Pamorya might offer (dresses, tops, skirts, sets, knitwear)."
         )
-        response = await asyncio.to_thread(
-            _client.models.generate_content,
-            model=GEMINI_WORKER_MODEL,
-            contents=grounded_prompt,
-            config=_genai_types.GenerateContentConfig(
-                tools=[_genai_types.Tool(google_search=_genai_types.GoogleSearch())],
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                _client.models.generate_content,
+                model=GEMINI_WORKER_MODEL,
+                contents=grounded_prompt,
+                config=_genai_types.GenerateContentConfig(
+                    tools=[_genai_types.Tool(google_search=_genai_types.GoogleSearch())],
+                ),
             ),
+            timeout=40,
         )
         answer = response.text
         logger.info("Gemini grounding succeeded for web search")
+        asyncio.create_task(asyncio.to_thread(web_cache.put, query, answer))
         return {"messages": [AIMessage(content=answer)]}
-    except Exception as e:
-        logger.warning("Gemini grounding failed (%s) — falling back to Tavily", e)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning("Gemini grounding failed or timed out (%s) — falling back to Tavily", e)
         full_messages = [HumanMessage(content=WEB_SEARCH_SYSTEM)] + messages
         ai_response = await llm_with_web_search_tools.ainvoke(full_messages)
         return {"messages": [ai_response]}
@@ -821,12 +837,31 @@ async def occasion_planner_node(state: AgentState) -> dict:
     budget_lkr = occasion.get("budget_lkr", 0)
     style_preference = occasion.get("style_preference", "elegant")
 
+    thread_id = state.get("thread_id", "")
+
     dress_query = f"{occasion_type} {style_preference} dress"
     accessories_query = f"accessories earrings necklace {occasion_type}"
     shoes_query = f"shoes sandals heels {style_preference}"
 
+    # Load any previously cached search results for this occasion (enables retry-without-redundancy)
+    _draft_key = f"session:{thread_id}:occasion_draft" if thread_id else None
+    _cached_draft: dict = {}
+    if _draft_key:
+        try:
+            from app.memory.episodic import _get_redis as _ep_redis
+            _r = _ep_redis()
+            if _r:
+                _raw_draft = _r.get(_draft_key)
+                if _raw_draft:
+                    _cached_draft = _json.loads(_raw_draft)
+                    logger.info("Occasion planner: loaded cached draft for thread %s", thread_id)
+        except Exception:
+            _cached_draft = {}
+
     q_tool = data_tool_lookup.get("query_product_database")
-    dress_r = acc_r = shoes_r = ""
+    dress_r = _cached_draft.get("dress_r", "")
+    acc_r = _cached_draft.get("acc_r", "")
+    shoes_r = _cached_draft.get("shoes_r", "")
     if q_tool:
         async def _search(query_str: str) -> str:
             try:
@@ -842,14 +877,40 @@ async def occasion_planner_node(state: AgentState) -> dict:
                 return ""
 
         try:
-            dress_r, acc_r, shoes_r = await asyncio.gather(
-                _search(dress_query),
-                _search(accessories_query),
-                _search(shoes_query),
-            )
+            missing_coros = []
+            missing_keys = []
+            if not dress_r:
+                missing_coros.append(_search(dress_query))
+                missing_keys.append("dress_r")
+            if not acc_r:
+                missing_coros.append(_search(accessories_query))
+                missing_keys.append("acc_r")
+            if not shoes_r:
+                missing_coros.append(_search(shoes_query))
+                missing_keys.append("shoes_r")
+
+            if missing_coros:
+                results = await asyncio.gather(*missing_coros)
+                result_map = dict(zip(missing_keys, results))
+                if "dress_r" in result_map:
+                    dress_r = result_map["dress_r"]
+                if "acc_r" in result_map:
+                    acc_r = result_map["acc_r"]
+                if "shoes_r" in result_map:
+                    shoes_r = result_map["shoes_r"]
         except Exception as e:
             logger.warning("Occasion planner parallel search failed: %s", e)
             return {"messages": [AIMessage(content="Our product catalogue is temporarily unavailable. Please try again.")]}
+
+        # Persist intermediate search results so retries skip redundant MCP calls
+        if _draft_key and any([dress_r, acc_r, shoes_r]):
+            try:
+                from app.memory.episodic import _get_redis as _ep_redis
+                _r = _ep_redis()
+                if _r:
+                    _r.setex(_draft_key, 300, _json.dumps({"dress_r": dress_r, "acc_r": acc_r, "shoes_r": shoes_r}))
+            except Exception:
+                pass
     else:
         return {"messages": [AIMessage(content="Our product catalogue is temporarily unavailable. Please try again.")]}
 
