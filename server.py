@@ -63,12 +63,8 @@ MAX_QUERY_LENGTH = 2_000           # characters
 AGENT_TIMEOUT_SECONDS = 90         # cap a single agent run (used by /chat POST and /whatsapp)
 AGENT_HARD_LIMIT_SECONDS = 600     # absolute ceiling for SSE streaming runs (10 min)
 
-# CORS — restrict to known origins; override via env for flexibility
-_raw_origins = os.getenv(
-    "ALLOWED_ORIGINS",
-    "https://apparel-agent-frontend.vercel.app,https://apparel-agent-backend-6buv-git-master-viraj97-sls-projects.vercel.app,http://localhost:3000,http://localhost:8000,http://localhost:5173",
-)
-ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+# CORS — regex matches any Vercel deployment + localhost (any port)
+CORS_ORIGIN_REGEX = r"https://.*\.vercel\.app|http://localhost(:\d+)?"
 
 # Patterns that look like prompt-injection attempts
 _INJECTION_PATTERNS = re.compile(
@@ -127,10 +123,10 @@ app.mount("/product_images", StaticFiles(directory="product_images"), name="prod
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=CORS_ORIGIN_REGEX,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "x-admin-key"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(admin_router)
