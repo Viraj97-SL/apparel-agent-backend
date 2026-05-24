@@ -45,7 +45,7 @@ export const OrderList: React.FC = () => {
       await apiClient.patch(`/admin/orders/${orderId}`, { status: newStatus });
       notify?.({ type: "success", message: `Order updated to ${newStatus}`, description: "" });
       // Refresh table
-      tableProps.onChange?.({ current: 1 }, {}, {}, { action: "paginate" });
+      tableProps.onChange?.({ current: 1 }, {}, {}, { action: "paginate", currentDataSource: [] });
     } catch {
       notify?.({ type: "error", message: "Failed to update order status", description: "" });
     } finally {

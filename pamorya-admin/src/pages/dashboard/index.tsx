@@ -145,10 +145,10 @@ export const Dashboard: React.FC = () => {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis
                   dataKey="date"
-                  tickFormatter={(d) => d.slice(5)} // MM-DD
+                  tickFormatter={(d: string) => d.slice(5)} // MM-DD
                   tick={{ fontSize: 12 }}
                 />
-                <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
+                <YAxis tick={{ fontSize: 12 }} tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}k`} />
                 <Tooltip formatter={(v: number) => [`LKR ${v.toLocaleString()}`, "Revenue"]} />
                 <Line
                   type="monotone"
@@ -174,7 +174,7 @@ export const Dashboard: React.FC = () => {
                   cx="50%"
                   cy="50%"
                   outerRadius={80}
-                  label={({ name, value }) => `${name}: ${value}`}
+                  label={({ name, value }: { name: string; value: number }) => `${name}: ${value}`}
                   labelLine={false}
                 >
                   {pieData.map((entry, i) => (
