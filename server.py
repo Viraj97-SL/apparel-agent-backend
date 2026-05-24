@@ -66,7 +66,7 @@ AGENT_HARD_LIMIT_SECONDS = 600     # absolute ceiling for SSE streaming runs (10
 # CORS — restrict to known origins; override via env for flexibility
 _raw_origins = os.getenv(
     "ALLOWED_ORIGINS",
-    "https://apparel-agent-frontend.vercel.app,http://localhost:3000,http://localhost:8000,http://localhost:5173",
+    "https://apparel-agent-frontend.vercel.app,https://apparel-agent-backend-6buv-git-master-viraj97-sls-projects.vercel.app,http://localhost:3000,http://localhost:8000,http://localhost:5173",
 )
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
