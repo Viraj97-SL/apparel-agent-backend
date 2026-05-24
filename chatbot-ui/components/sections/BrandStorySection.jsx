@@ -1,4 +1,12 @@
 'use client';
+import { Bot, Shirt, MessageSquare, Brain } from 'lucide-react';
+
+const TILES = [
+  { Icon: Bot, title: 'AI-Powered', desc: 'LangGraph multi-agent system routes queries to specialist models' },
+  { Icon: Shirt, title: 'Virtual Try-On', desc: 'Fashn.ai photorealistic garment fitting in 30 seconds' },
+  { Icon: MessageSquare, title: 'WhatsApp Native', desc: 'Order, style-check, and try-on without leaving WhatsApp' },
+  { Icon: Brain, title: 'Remembers You', desc: 'Multi-layer memory learns your preferences over time' },
+];
 
 export default function BrandStorySection() {
   return (
@@ -95,12 +103,7 @@ export default function BrandStorySection() {
             background: 'rgba(248,244,239,0.1)',
           }}
         >
-          {[
-            { icon: '🤖', title: 'AI-Powered', desc: 'LangGraph multi-agent system routes queries to specialist models' },
-            { icon: '👗', title: 'Virtual Try-On', desc: 'Fashn.ai photorealistic garment fitting in 30 seconds' },
-            { icon: '💬', title: 'WhatsApp Native', desc: 'Order, style-check, and try-on without leaving WhatsApp' },
-            { icon: '🧠', title: 'Remembers You', desc: 'Multi-layer memory learns your preferences over time' },
-          ].map((feat) => (
+          {TILES.map((feat) => (
             <div
               key={feat.title}
               style={{
@@ -111,7 +114,18 @@ export default function BrandStorySection() {
               onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(201,151,78,0.1)')}
               onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(28,20,16,0.5)')}
             >
-              <div style={{ fontSize: '1.75rem', marginBottom: '0.75rem' }}>{feat.icon}</div>
+              <div style={{
+                width: '40px',
+                height: '40px',
+                borderRadius: '2px',
+                border: '1px solid rgba(201,151,78,0.35)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                marginBottom: '0.85rem',
+              }}>
+                <feat.Icon size={18} color="var(--color-gold)" />
+              </div>
               <p
                 style={{
                   fontFamily: 'var(--font-display)',

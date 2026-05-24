@@ -46,3 +46,6 @@ Thumbs.db
 faiss_index/
 *.faiss
 *.pkl
+
+# === Environment example files (may contain real credentials)
+pamorya-admin/.env.example

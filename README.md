@@ -62,12 +62,15 @@ A **production-deployed, multi-agent AI fashion assistant** built for [Pamorya](
 | **Memory L3** | MongoDB Atlas M0 free — semantic long-term user facts |
 | **Image CDN** | Cloudinary |
 | **Virtual Try-On** | Fashn.ai (primary, async + retry) → Replicate IDM-VTON (fallback) |
+| **Frontend** | Next.js 15 — 9 sections, Framer Motion, GSAP + ScrollTrigger |
+| **Admin Panel** | Refine.dev + Ant Design v5 + Vite (React 18, TypeScript) |
 | **Deployment** | Docker → Railway (backend), Vercel (frontend) |
 | **Rate Limiting** | slowapi (50 req/min) |
 | **Observability** | LangSmith (optional — set `LANGSMITH_API_KEY`) |
 
 ## Key Features
 
+### AI Agent
 - **Multi-agent supervisor** — 9-node LangGraph graph routes queries to the right specialist: RAG, data query, sales, web search, style advisor, reflection
 - **Plan-and-Execute** — complex queries are decomposed into steps before execution
 - **Reflexion** — self-critique loop retries low-quality responses before sending to user
@@ -81,6 +84,21 @@ A **production-deployed, multi-agent AI fashion assistant** built for [Pamorya](
 - **Trending products** — `/api/trending` endpoint returns live product list with Cloudinary image URLs
 - **Web search** — Tavily results formatted as clean markdown (title + content + source)
 - **Conversation memory** — LangGraph PostgreSQL checkpointer preserves context across sessions
+
+### Frontend (Next.js 15)
+- **9 premium sections** — Hero, Featured Collections, AI Stylist, VTO, Trending, Brand Story, Brand Stats, Partners, Testimonials
+- **Embedded chat widget** — button actions wired directly to the LangGraph agent via `lib/chatEvents.js`
+- **GSAP + ScrollTrigger** — hero parallax and section reveal animations
+- **Framer Motion** — component-level transitions and layout animations
+- **Real product images** — FeaturedCollections and TrendingSection pull live data from `/api/trending`
+- **Mobile-responsive** — fluid grid layouts with `clamp()`-based spacing and typography
+
+### Admin Panel (Refine.dev)
+- **Product management** — create, edit, list products with Cloudinary image upload
+- **Order management** — full order list with status tracking
+- **Customer management** — customer list and detail view
+- **Dashboard** — analytics with Ant Design Plots + Recharts
+- **Auth-gated** — key-based auth provider protecting all admin routes
 
 ## Project Structure
 
@@ -108,11 +126,36 @@ NewChatbot/
 │   ├── test_api.py
 │   └── test_db_builder.py
 ├── chatbot-ui/               # Next.js 15 frontend (Vercel)
-│   └── components/sections/
-│       ├── FeaturedCollections.jsx  # 12 real products + filter tabs
-│       └── TrendingSection.jsx      # Fetches /api/trending, real images
+│   ├── components/
+│   │   ├── sections/
+│   │   │   ├── HeroSection.jsx          # GSAP split-text hero + parallax
+│   │   │   ├── FeaturedCollections.jsx  # 12 real products + filter tabs
+│   │   │   ├── AIStylistSection.jsx     # Chat widget integration
+│   │   │   ├── VTOSection.jsx           # Virtual try-on UI
+│   │   │   ├── TrendingSection.jsx      # Fetches /api/trending, real images
+│   │   │   ├── BrandStorySection.jsx    # Brand pillars + feature tiles
+│   │   │   ├── BrandStatsSection.jsx    # Animated KPI counters
+│   │   │   ├── PartnersSection.jsx      # Partner logos
+│   │   │   └── TestimonialsSection.jsx  # Customer reviews carousel
+│   │   └── chat/
+│   │       ├── ChatWidget.jsx           # Embedded chat UI
+│   │       └── lib/chatEvents.js        # Agent event bus (button → agent)
+│   └── ...
+├── pamorya-admin/            # Refine.dev admin panel (Vite + TypeScript)
+│   └── src/
+│       ├── pages/
+│       │   ├── dashboard/    # Analytics + KPI charts
+│       │   ├── products/     # list, create, edit
+│       │   ├── orders/       # Order list + status
+│       │   ├── customers/    # Customer list
+│       │   └── login.tsx     # Auth-gated entry
+│       ├── components/
+│       │   └── CloudinaryUpload.tsx  # Unsigned Cloudinary image upload
+│       └── providers/
+│           ├── authProvider.ts   # Key-based auth
+│           └── dataProvider.ts   # FastAPI /admin/* REST adapter
 ├── data/                     # Source .txt files for RAG index
-├── server.py                 # FastAPI entry point + /api/trending endpoint
+├── server.py                 # FastAPI entry point + /api/trending + /admin/* endpoints
 ├── start.sh                  # Container startup: build FAISS if missing, then uvicorn
 ├── Dockerfile
 ├── requirements.txt
@@ -143,6 +186,24 @@ python app/rag_indexer.py
 uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+### Frontend
+
+```bash
+cd chatbot-ui
+npm install
+npm run dev
+```
+
+### Admin Panel
+
+```bash
+cd pamorya-admin
+npm install
+# Copy .env.example to .env and fill in your values
+cp .env.example .env
+npm run dev
+```
+
 ### Docker
 
 ```bash
@@ -161,6 +222,8 @@ pytest tests/test_routing.py tests/test_vto.py tests/test_memory.py -v
 
 ## Environment Variables
 
+### Backend (`.env`)
+
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GOOGLE_API_KEY` | Yes | Gemini 2.5 Flash/Pro |
@@ -173,6 +236,15 @@ pytest tests/test_routing.py tests/test_vto.py tests/test_memory.py -v
 | `MONGODB_URI` | Recommended | Layer 3 semantic memory (MongoDB Atlas M0 free) |
 | `LANGSMITH_API_KEY` | Optional | LangSmith tracing |
 | `HF_TOKEN` | Optional | Faster HuggingFace model downloads |
+
+### Admin Panel (`pamorya-admin/.env`)
+
+| Variable | Description |
+|----------|-------------|
+| `VITE_API_URL` | Backend URL (e.g. `http://localhost:8000`) |
+| `VITE_ADMIN_KEY` | Must match `ADMIN_SECRET_KEY` on the backend |
+| `VITE_CLOUDINARY_CLOUD_NAME` | Your Cloudinary cloud name |
+| `VITE_CLOUDINARY_UPLOAD_PRESET` | Unsigned upload preset from Cloudinary dashboard |
 
 ## API
 
@@ -197,6 +269,13 @@ curl https://your-domain/api/trending
 
 ## Changelog
 
+### 2026-05-24 — Admin Panel + Frontend Polish
+- **Admin panel**: Full Refine.dev + Ant Design v5 panel at `pamorya-admin/` — product CRUD with Cloudinary upload, order list, customer list, dashboard with charts
+- **Chat widget wired to agent**: Button actions in `ChatWidget.jsx` now dispatch events via `lib/chatEvents.js` directly to the LangGraph agent
+- **CORS hardened**: Replaced static origin list with a Vercel + localhost regex — no more per-deployment CORS updates
+- **Brand Story section**: Updated feature tiles (AI-Powered, Virtual Try-On, WhatsApp Native, Remembers You) with lucide-react icons
+- **9 frontend sections live**: Hero, Featured Collections, AI Stylist, VTO, Trending, Brand Story, Brand Stats, Partners, Testimonials
+
 ### 2026-05-21 — Deep-Dive Sprint
 - **Sales agent overhaul**: delivery date estimation (next N business days skipping weekends), COD receipt with order number, WhatsApp dispatch notification message, `get_order_status` tool
 - **All sub-agent prompts rewritten**: handles partial customer info, mind changes, cart queries, price-after-add-to-cart
@@ -210,4 +289,4 @@ curl https://your-domain/api/trending
 
 ---
 
-**Built by [Viraj Bulugahapitiya - AI Engineer] (https://github.com/Viraj97-SL)**
+**Built by [Viraj Bulugahapitiya - AI Engineer](https://github.com/Viraj97-SL)**
