@@ -22,6 +22,9 @@ from app.observability import configure_langsmith
 # --- DB IMPORTS ---
 from app.db_builder import init_db, populate_initial_data
 
+# --- ADMIN ROUTER ---
+from app.admin_router import router as admin_router
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -63,7 +66,7 @@ AGENT_HARD_LIMIT_SECONDS = 600     # absolute ceiling for SSE streaming runs (10
 # CORS — restrict to known origins; override via env for flexibility
 _raw_origins = os.getenv(
     "ALLOWED_ORIGINS",
-    "https://apparel-agent-frontend.vercel.app,http://localhost:3000,http://localhost:8000",
+    "https://apparel-agent-frontend.vercel.app,http://localhost:3000,http://localhost:8000,http://localhost:5173",
 )
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
@@ -86,7 +89,7 @@ async def lifespan(app: FastAPI):
     print("🔄 Lifespan: Checking database status...")
     try:
         init_db()
-        populate_initial_data()
+        # populate_initial_data() removed — use POST /admin/import-excel instead
     except Exception as exc:
         print(f"❌ DB Startup Error: {exc}")
     try:
@@ -126,9 +129,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["POST", "GET", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "x-admin-key"],
 )
+
+app.include_router(admin_router)
 
 
 # ---------------------------------------------------------------------------
