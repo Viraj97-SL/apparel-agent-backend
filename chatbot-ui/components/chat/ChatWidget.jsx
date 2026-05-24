@@ -351,6 +351,7 @@ export default function ChatWidget({ compact = false }) {
   const messagesContainerRef = useRef(null);
   const vtoAbortRef          = useRef(null);
   const vtoProductNameRef    = useRef('');
+  const handleSubmitRef        = useRef(null);
 
   useEffect(() => {
     if (!chatHistory.length && !isLoading) return;
@@ -381,7 +382,7 @@ export default function ChatWidget({ compact = false }) {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleSubmit = async (e, overrideText = null) => {
+  const handleSubmit = async (e, overrideText = null, forcedMode = null) => {
     if (e) e.preventDefault();
     const textToSend = overrideText || query;
     if (!textToSend.trim() && !selectedFile) return;
@@ -397,8 +398,9 @@ export default function ChatWidget({ compact = false }) {
     setIsLoading(true);
 
     // VTO async path — only when there's a product name to look up
+    const effectiveMode = forcedMode ?? mode;
     const hasProductName = textToSend.trim().length > 2;
-    if (mode === 'vto' && hasProductName) {
+    if (effectiveMode === 'vto' && hasProductName) {
       vtoProductNameRef.current = textToSend.trim();
       const formData = new FormData();
       formData.append('product_name', textToSend);
@@ -460,7 +462,7 @@ export default function ChatWidget({ compact = false }) {
         const reply = await streamChat(
           textToSend || ' ',
           threadId,
-          mode,
+          effectiveMode,
           (partial) => setStreamingContent(partial),
           (tid) => setThreadId(tid),
         );
@@ -499,7 +501,7 @@ export default function ChatWidget({ compact = false }) {
     // File upload path — POST /chat
     const formData = new FormData();
     formData.append('query', textToSend || ' ');
-    formData.append('mode', mode);
+    formData.append('mode', effectiveMode);
     if (threadId)    formData.append('thread_id', threadId);
     if (currentFile) formData.append('file', currentFile);
 
@@ -539,6 +541,28 @@ export default function ChatWidget({ compact = false }) {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    handleSubmitRef.current = handleSubmit;
+  });
+
+  useEffect(() => {
+    const handler = (e) => {
+      const { action, productName } = e.detail;
+      if (action === 'tryon') {
+        setMode('vto');
+        setQuery(productName);
+      } else if (action === 'ask') {
+        setMode('standard');
+        handleSubmitRef.current?.(null, `Tell me about the "${productName}"`, 'standard');
+      } else if (action === 'buy') {
+        setMode('standard');
+        handleSubmitRef.current?.(null, `I'd like to buy the ${productName}`, 'standard');
+      }
+    };
+    window.addEventListener('pamorya:chat-action', handler);
+    return () => window.removeEventListener('pamorya:chat-action', handler);
+  }, []);
 
   const renderContent = useCallback((raw) => {
     const content = sanitiseText(raw);

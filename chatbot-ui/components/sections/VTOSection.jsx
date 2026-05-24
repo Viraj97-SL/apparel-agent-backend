@@ -1,23 +1,24 @@
 'use client';
+import { Camera, Shirt, Sparkles } from 'lucide-react';
 
 const STEPS = [
   {
     number: '01',
     title: 'Upload Your Photo',
     desc: 'A full-body shot works best. Stand against a plain background in fitted clothes.',
-    icon: '📸',
+    Icon: Camera,
   },
   {
     number: '02',
     title: 'Choose a Style',
     desc: 'Browse our collection or tell the AI stylist which piece you want to try.',
-    icon: '👗',
+    Icon: Shirt,
   },
   {
     number: '03',
     title: 'See Your Look',
     desc: 'Our AI generates a photorealistic try-on in under 30 seconds.',
-    icon: '✨',
+    Icon: Sparkles,
   },
 ];
 
@@ -89,7 +90,18 @@ export default function VTOSection() {
                 {step.number}
               </span>
 
-              <div style={{ fontSize: '2rem', marginBottom: '1rem' }}>{step.icon}</div>
+              <div style={{
+                width: '48px',
+                height: '48px',
+                background: 'var(--color-accent-light)',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                marginBottom: '1.25rem',
+              }}>
+                <step.Icon size={22} color="var(--color-accent)" />
+              </div>
               <h3
                 style={{
                   fontFamily: 'var(--font-display)',

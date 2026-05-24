@@ -1,11 +1,12 @@
 'use client';
+import { Brain, Globe, Package, MessageSquare } from 'lucide-react';
 import ChatWidget from '../chat/ChatWidget';
 
 const FEATURES = [
-  { icon: '🧠', label: 'Remembers You', desc: 'Multi-layer memory learns your style across sessions' },
-  { icon: '🌍', label: 'Deep Research', desc: 'Searches trends in real-time to give current advice' },
-  { icon: '📦', label: 'Order Instantly', desc: 'Buy via chat with Cash on Delivery — no account needed' },
-  { icon: '💬', label: 'WhatsApp Too', desc: 'Same AI available on WhatsApp — style on the go' },
+  { Icon: Brain, label: 'Remembers You', desc: 'Multi-layer memory learns your style across sessions' },
+  { Icon: Globe, label: 'Deep Research', desc: 'Searches trends in real-time to give current advice' },
+  { Icon: Package, label: 'Order Instantly', desc: 'Buy via chat with Cash on Delivery — no account needed' },
+  { Icon: MessageSquare, label: 'WhatsApp Too', desc: 'Same AI available on WhatsApp — style on the go' },
 ];
 
 export default function AIStylistSection() {
@@ -85,7 +86,18 @@ export default function AIStylistSection() {
                   gap: '0.85rem',
                 }}
               >
-                <span style={{ fontSize: '1.25rem', flexShrink: 0, marginTop: '1px' }}>{feat.icon}</span>
+                <div style={{
+                  width: '36px',
+                  height: '36px',
+                  background: 'var(--color-accent-light)',
+                  borderRadius: '2px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                }}>
+                  <feat.Icon size={17} color="var(--color-accent)" />
+                </div>
                 <div>
                   <p
                     style={{

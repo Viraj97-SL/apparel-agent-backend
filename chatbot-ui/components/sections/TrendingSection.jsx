@@ -1,5 +1,8 @@
 'use client';
+
 import { useEffect, useState } from 'react';
+import { Heart, ShoppingBag } from 'lucide-react';
+import { dispatchChatAction } from '../../lib/chatEvents';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://apparel-agent-backend-production.up.railway.app';
 
@@ -14,6 +17,27 @@ const PLACEHOLDER_PRODUCTS = [
 
 function TrendingCard({ product, index }) {
   const [hovered, setHovered] = useState(false);
+  const [wishlisted, setWishlisted] = useState(false);
+
+  useEffect(() => {
+    try {
+      const list = JSON.parse(localStorage.getItem('pamorya_wishlist') || '[]');
+      setWishlisted(list.includes(product.product_name));
+    } catch (_) {}
+  }, [product.product_name]);
+
+  const toggleWishlist = (e) => {
+    e.stopPropagation();
+    const next = !wishlisted;
+    setWishlisted(next);
+    try {
+      const list = JSON.parse(localStorage.getItem('pamorya_wishlist') || '[]');
+      const updated = next
+        ? [...list, product.product_name]
+        : list.filter((n) => n !== product.product_name);
+      localStorage.setItem('pamorya_wishlist', JSON.stringify(updated));
+    } catch (_) {}
+  };
 
   return (
     <div
@@ -33,8 +57,6 @@ function TrendingCard({ product, index }) {
               width: '100%',
               height: '100%',
               objectFit: 'cover',
-              transition: 'transform 0.6s ease',
-              transform: hovered ? 'scale(1.04)' : 'scale(1)',
             }}
           />
         ) : (
@@ -54,34 +76,85 @@ function TrendingCard({ product, index }) {
           </div>
         )}
         <div className="overlay" />
+
+        {/* Wishlist */}
+        <button
+          className={`wishlist-btn${wishlisted ? ' wishlisted' : ''}`}
+          onClick={toggleWishlist}
+          aria-label={wishlisted ? 'Remove from wishlist' : 'Add to wishlist'}
+        >
+          <Heart
+            size={14}
+            color={wishlisted ? 'var(--color-accent)' : 'var(--color-text)'}
+            fill={wishlisted ? 'var(--color-accent)' : 'none'}
+          />
+        </button>
+
+        {/* Hover CTAs */}
         <div className="ctas">
           <button
             className="btn-primary"
             style={{ padding: '0.45rem 0.9rem', fontSize: '0.65rem' }}
-            onClick={() => document.getElementById('ai-stylist')?.scrollIntoView({ behavior: 'smooth' })}
+            onClick={() => dispatchChatAction('ask', product.product_name)}
           >
-            Buy Now
+            Ask Stylist
           </button>
           <button
             className="btn-outline"
             style={{ padding: '0.45rem 0.9rem', fontSize: '0.65rem', borderColor: 'white', color: 'white' }}
-            onClick={() => document.getElementById('vto')?.scrollIntoView({ behavior: 'smooth' })}
+            onClick={() => dispatchChatAction('tryon', product.product_name)}
           >
             Try On
           </button>
         </div>
       </div>
 
-      <div style={{ padding: '0.75rem 0' }}>
+      {/* Card info */}
+      <div style={{ padding: '0.75rem 0 0' }}>
         <p style={{ fontFamily: 'var(--font-display)', fontSize: 'var(--text-base)', fontWeight: 300 }}>
           {product.product_name}
         </p>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.25rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0.25rem 0 0.6rem' }}>
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>{product.category}</p>
           <p style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)', color: 'var(--color-accent)' }}>
             LKR {product.price?.toLocaleString()}
           </p>
         </div>
+
+        {/* Buy It */}
+        <button
+          onClick={() => dispatchChatAction('buy', product.product_name)}
+          style={{
+            width: '100%',
+            padding: '0.45rem 0.75rem',
+            marginBottom: '0.75rem',
+            background: 'transparent',
+            border: '1px solid var(--color-border)',
+            cursor: 'pointer',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--text-xs)',
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            color: 'var(--color-text-muted)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            transition: 'color 0.2s, border-color 0.2s, background 0.2s',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = 'var(--color-bg)';
+            e.currentTarget.style.background = 'var(--color-accent)';
+            e.currentTarget.style.borderColor = 'var(--color-accent)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = 'var(--color-text-muted)';
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.borderColor = 'var(--color-border)';
+          }}
+        >
+          <span>Buy It</span>
+          <ShoppingBag size={13} />
+        </button>
       </div>
     </div>
   );
@@ -96,7 +169,7 @@ export default function TrendingSection() {
       .then((data) => {
         if (Array.isArray(data) && data.length) setProducts(data);
       })
-      .catch(() => {}); // silently keep placeholder data on error
+      .catch(() => {});
   }, []);
 
   return (

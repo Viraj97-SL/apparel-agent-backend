@@ -265,6 +265,21 @@ h1, h2, h3, h4 {
 .typing-dot:nth-child(2) { animation-delay: .2s; }
 .typing-dot:nth-child(3) { animation-delay: .4s; }
 
+/* ─── Wishlist button ─────────────────────────── */
+.wishlist-btn {
+  position: absolute; top: 0.75rem; right: 0.75rem; z-index: 2;
+  background: rgba(248,244,239,0.92);
+  border: none; border-radius: 2px;
+  width: 30px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--duration-normal), background var(--duration-fast);
+}
+.product-card:hover .wishlist-btn,
+.wishlist-btn.wishlisted { opacity: 1; }
+.wishlist-btn:hover { background: var(--color-bg); }
+
 /* Skeleton loader */
 .skeleton {
   background: linear-gradient(90deg, var(--color-border) 25%, var(--color-surface-warm) 50%, var(--color-border) 75%);

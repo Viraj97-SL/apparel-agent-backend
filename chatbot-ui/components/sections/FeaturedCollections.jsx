@@ -1,6 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { Heart, ShoppingBag } from 'lucide-react';
+import { dispatchChatAction } from '../../lib/chatEvents';
 
 const PRODUCTS = [
   { name: 'Wild Bloom Whisper', price: 1790, img: 'https://res.cloudinary.com/dkftnrrjq/image/upload/v1769167858/PWBW01_v1lxc3.jpg', category: 'Dresses' },
@@ -21,6 +23,27 @@ const FILTERS = ['All', 'Dresses', 'Sets & Co-ords', 'Tops & Blouses', 'Skirts']
 
 function ProductCard({ product, index }) {
   const [hovered, setHovered] = useState(false);
+  const [wishlisted, setWishlisted] = useState(false);
+
+  useEffect(() => {
+    try {
+      const list = JSON.parse(localStorage.getItem('pamorya_wishlist') || '[]');
+      setWishlisted(list.includes(product.name));
+    } catch (_) {}
+  }, [product.name]);
+
+  const toggleWishlist = (e) => {
+    e.stopPropagation();
+    const next = !wishlisted;
+    setWishlisted(next);
+    try {
+      const list = JSON.parse(localStorage.getItem('pamorya_wishlist') || '[]');
+      const updated = next
+        ? [...list, product.name]
+        : list.filter((n) => n !== product.name);
+      localStorage.setItem('pamorya_wishlist', JSON.stringify(updated));
+    } catch (_) {}
+  };
 
   return (
     <div
@@ -39,38 +62,48 @@ function ProductCard({ product, index }) {
             width: '100%',
             height: '100%',
             objectFit: 'cover',
-            transition: 'transform 0.6s ease',
-            transform: hovered ? 'scale(1.04)' : 'scale(1)',
           }}
         />
         <div className="overlay" />
+
+        {/* Wishlist */}
+        <button
+          className={`wishlist-btn${wishlisted ? ' wishlisted' : ''}`}
+          onClick={toggleWishlist}
+          aria-label={wishlisted ? 'Remove from wishlist' : 'Add to wishlist'}
+        >
+          <Heart
+            size={14}
+            color={wishlisted ? 'var(--color-accent)' : 'var(--color-text)'}
+            fill={wishlisted ? 'var(--color-accent)' : 'none'}
+          />
+        </button>
+
+        {/* Hover CTAs */}
         <div className="ctas">
           <button
             className="btn-primary"
             style={{ padding: '0.5rem 1rem', fontSize: 'var(--text-xs)' }}
-            onClick={() => {
-              document.getElementById('ai-stylist')?.scrollIntoView({ behavior: 'smooth' });
-            }}
+            onClick={() => dispatchChatAction('ask', product.name)}
           >
             Ask Stylist
           </button>
           <button
             className="btn-outline"
             style={{ padding: '0.5rem 1rem', fontSize: 'var(--text-xs)', borderColor: 'white', color: 'white' }}
-            onClick={() => {
-              document.getElementById('vto')?.scrollIntoView({ behavior: 'smooth' });
-            }}
+            onClick={() => dispatchChatAction('tryon', product.name)}
           >
             Try On
           </button>
         </div>
       </div>
 
-      <div style={{ padding: '0.85rem 0' }}>
+      {/* Card info */}
+      <div style={{ padding: '0.75rem 0 0' }}>
         <p style={{ fontFamily: 'var(--font-display)', fontSize: 'var(--text-lg)', fontWeight: 300 }}>
           {product.name}
         </p>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.25rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0.25rem 0 0.6rem' }}>
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>
             {product.category}
           </p>
@@ -78,6 +111,41 @@ function ProductCard({ product, index }) {
             LKR {product.price.toLocaleString()}
           </p>
         </div>
+
+        {/* Buy It */}
+        <button
+          onClick={() => dispatchChatAction('buy', product.name)}
+          style={{
+            width: '100%',
+            padding: '0.45rem 0.75rem',
+            marginBottom: '0.75rem',
+            background: 'transparent',
+            border: '1px solid var(--color-border)',
+            cursor: 'pointer',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--text-xs)',
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            color: 'var(--color-text-muted)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            transition: 'color 0.2s, border-color 0.2s, background 0.2s',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = 'var(--color-bg)';
+            e.currentTarget.style.background = 'var(--color-accent)';
+            e.currentTarget.style.borderColor = 'var(--color-accent)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = 'var(--color-text-muted)';
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.borderColor = 'var(--color-border)';
+          }}
+        >
+          <span>Buy It</span>
+          <ShoppingBag size={13} />
+        </button>
       </div>
     </div>
   );
