@@ -19,7 +19,9 @@ from app.models import (
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "pamorya-admin-2025")
+ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY")
+if not ADMIN_SECRET_KEY:
+    raise RuntimeError("ADMIN_SECRET_KEY environment variable is required")
 
 VALID_STATUSES = {"Draft", "Pending", "Paid", "Shipped", "Cancelled"}
 

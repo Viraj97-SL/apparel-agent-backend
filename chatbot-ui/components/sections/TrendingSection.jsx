@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Heart, ShoppingBag } from 'lucide-react';
 import { dispatchChatAction } from '../../lib/chatEvents';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://apparel-agent-backend-production.up.railway.app';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 const PLACEHOLDER_PRODUCTS = [
   { product_name: 'Wild Bloom Whisper', category: 'Dresses', price: 1790, image_url: 'https://res.cloudinary.com/dkftnrrjq/image/upload/v1769167858/PWBW01_v1lxc3.jpg' },

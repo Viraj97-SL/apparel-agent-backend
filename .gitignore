@@ -37,6 +37,15 @@ temp_*.jpg
 .DS_Store
 Thumbs.db
 
+# === AI Planning / Internal Docs ===
+claude.md
+CLAUDE.md
+
+# === Personal / Unnecessary Media ===
+WhatsApp*.jpg
+WhatsApp*.jpeg
+WhatsApp*.png
+
 # === Data Files (tracked separately or too large) ===
 # Keep Excel files out of git — load from cloud or volume
 *.xlsx
